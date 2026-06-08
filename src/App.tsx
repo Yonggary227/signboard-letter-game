@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { initWorker, recognizeText, getOcrSpaceKey, setOcrSpaceKey, type WordBox } from './ocr'
-import { pickRandomWord, toSyllables, hintImageUrl, type WordEntry } from './words'
+import { pickRandomWord, toSyllables, type WordEntry } from './words'
 
 const OCR_TIMEOUT_MS = 20000
 const CREDITS_PER_WORD = 10
@@ -8,7 +8,6 @@ const CREDITS_PER_WORD = 10
 const ENGINE_LABEL: Record<string, string> = {
   ocrspace: 'OCR.space',
   tesseract: 'Tesseract',
-  beta: '베타',
 }
 
 type Cam = 'off' | 'live' | 'frozen'
@@ -19,8 +18,7 @@ interface CaptureResult {
   text: string
   durationMs: number
   hit: boolean
-  found: string // 찾은 글자(있으면)
-  remain: string // 남은 글자 목록
+  target: string
   engine: string
   note?: string
   circle: { cx: number; cy: number; d: number } | null
@@ -49,18 +47,19 @@ function logMission(record: object) {
     /* noop */
   }
 }
-
 function mapEmbed(lat: number, lng: number): string {
   const d = 0.004
   const bbox = `${lng - d},${lat - d},${lng + d},${lat + d}`
   return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`
 }
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export default function App() {
   const [entry, setEntry] = useState<WordEntry>(() => pickRandomWord())
   const word = entry.ko
   const syllables = useMemo(() => toSyllables(word), [word])
   const [collected, setCollected] = useState<boolean[]>(() => syllables.map(() => false))
+  const [selected, setSelected] = useState(0) // 지금 찾을 음절(탭으로 선택)
 
   const [cam, setCam] = useState<Cam>('off')
   const [camError, setCamError] = useState('')
@@ -73,37 +72,59 @@ export default function App() {
 
   const [credits, setCredits] = useState<number>(() => num('credits', 0))
   const [completed, setCompleted] = useState<number>(() => num('completed', 0))
-
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
-  const [winImgFailed, setWinImgFailed] = useState(false)
+
+  // 줌
+  const [zoom, setZoom] = useState(1)
+  const [zoomMin, setZoomMin] = useState(1)
+  const [zoomMax, setZoomMax] = useState(1)
+  const [nativeZoom, setNativeZoom] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const trackRef = useRef<MediaStreamTrack | null>(null)
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null)
 
   const allDone = collected.every(Boolean)
   const doneCount = collected.filter(Boolean).length
-  const remainList = syllables.filter((_, i) => !collected[i])
+  const target = syllables[selected]
+  const zoomEnabled = zoomMax > zoomMin + 0.001
 
   useEffect(() => {
     initWorker().catch(() => {})
     requestLocation()
+    return () => stopCamera()
   }, [])
-
-  useEffect(() => () => stopCamera(), [])
 
   function stopCamera() {
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
+    trackRef.current = null
   }
 
   async function startCamera() {
     setCamError('')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       })
       streamRef.current = stream
+      const track = stream.getVideoTracks()[0]
+      trackRef.current = track
+      // 줌 지원 확인 (네이티브 우선, 없으면 디지털)
+      const caps: any = track.getCapabilities?.() ?? {}
+      if (caps.zoom) {
+        setNativeZoom(true)
+        setZoomMin(caps.zoom.min ?? 1)
+        setZoomMax(caps.zoom.max ?? 1)
+        setZoom(caps.zoom.min ?? 1)
+      } else {
+        setNativeZoom(false)
+        setZoomMin(1)
+        setZoomMax(5) // 디지털 줌 최대 5배
+        setZoom(1)
+      }
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         await videoRef.current.play()
@@ -113,6 +134,29 @@ export default function App() {
     } catch (e: any) {
       setCamError('카메라 권한을 허용해 주세요. (' + (e?.name || e) + ')')
     }
+  }
+
+  function applyZoom(z: number) {
+    const z2 = clamp(z, zoomMin, zoomMax)
+    setZoom(z2)
+    if (nativeZoom && trackRef.current) {
+      trackRef.current.applyConstraints({ advanced: [{ zoom: z2 } as any] }).catch(() => {})
+    }
+  }
+
+  // 핀치 줌
+  const dist = (t: React.TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+  function onTouchStart(e: React.TouchEvent) {
+    if (e.touches.length === 2) pinchRef.current = { dist: dist(e.touches), zoom }
+  }
+  function onTouchMove(e: React.TouchEvent) {
+    if (e.touches.length === 2 && pinchRef.current) {
+      const ratio = dist(e.touches) / pinchRef.current.dist
+      applyZoom(pinchRef.current.zoom * ratio)
+    }
+  }
+  function onTouchEnd() {
+    pinchRef.current = null
   }
 
   function requestLocation() {
@@ -127,10 +171,11 @@ export default function App() {
     )
   }
 
-  /** 한 글자 수집 + 기록 + (완성 시) 크레딧 */
   function applyFind(idx: number) {
     const next = collected.map((c, i) => (i === idx ? true : c))
     setCollected(next)
+    const nextUncollected = next.findIndex((c) => !c)
+    if (nextUncollected >= 0) setSelected(nextUncollected)
     const g = geo
     const at = g && 'lat' in g ? { lat: g.lat, lng: g.lng, acc: g.acc } : null
     logMission({ word, syllable: syllables[idx], ts: new Date().toISOString(), location: at })
@@ -141,18 +186,26 @@ export default function App() {
       setNum('credits', nc)
       setCompleted(ncomp)
       setNum('completed', ncomp)
-      setWinImgFailed(false)
     }
-    return next
   }
 
   async function capture() {
     const v = videoRef.current
     if (!v || allDone || !v.videoWidth) return
+    const vw = v.videoWidth
+    const vh = v.videoHeight
     const canvas = document.createElement('canvas')
-    canvas.width = v.videoWidth
-    canvas.height = v.videoHeight
-    canvas.getContext('2d')!.drawImage(v, 0, 0)
+    canvas.width = vw
+    canvas.height = vh
+    const ctx = canvas.getContext('2d')!
+    // 디지털 줌이면 중앙 영역을 잘라 확대해서 그린다(보이는 그대로 OCR)
+    if (!nativeZoom && zoom > 1) {
+      const zw = vw / zoom
+      const zh = vh / zoom
+      ctx.drawImage(v, (vw - zw) / 2, (vh - zh) / 2, zw, zh, 0, 0, vw, vh)
+    } else {
+      ctx.drawImage(v, 0, 0)
+    }
     setPreview(canvas.toDataURL('image/jpeg', 0.9))
     setCam('frozen')
     setPhase('loading')
@@ -160,37 +213,24 @@ export default function App() {
     setErrorDetail('')
     requestLocation()
 
+    const seeking = target
+    const seekIdx = selected
     const blob = await new Promise<Blob>((r) => canvas.toBlob((b) => r(b!), 'image/jpeg', 0.9))
     const file = new File([blob], 'shot.jpg', { type: 'image/jpeg' })
 
     try {
       const result = await recognizeText(file, OCR_TIMEOUT_MS)
-
-      // 남은 글자 중 사진에 보이는 첫 글자 하나를 수집 (순서 무관, 한 번에 하나)
-      let foundIdx = -1
-      let foundBox: WordBox | null = null
-      for (let i = 0; i < syllables.length; i++) {
-        if (collected[i]) continue
-        const s = syllables[i]
-        const box = result.words.find((w) => w.text.includes(s))
-        if (box || result.text.includes(s)) {
-          foundIdx = i
-          foundBox = box ?? null
-          break
-        }
-      }
-      const hit = foundIdx >= 0
-      const circle = foundBox
-        ? { cx: foundBox.cx, cy: foundBox.cy, d: Math.min(0.5, Math.max(foundBox.w, foundBox.h) * 1.6 + 0.04) }
+      const box: WordBox | undefined = result.words.find((w) => w.text.includes(seeking))
+      const hit = !!box || result.text.includes(seeking)
+      const circle = box
+        ? { cx: box.cx, cy: box.cy, d: Math.min(0.5, Math.max(box.w, box.h) * 1.6 + 0.04) }
         : null
-      if (hit) applyFind(foundIdx)
-
+      if (hit && !collected[seekIdx]) applyFind(seekIdx)
       setLast({
         text: result.text,
         durationMs: result.durationMs,
         hit,
-        found: hit ? syllables[foundIdx] : '',
-        remain: remainList.join(' '),
+        target: seeking,
         engine: result.engine,
         note: result.note,
         circle,
@@ -204,11 +244,13 @@ export default function App() {
     }
   }
 
-  /** 베타: 버튼 한 번 = 남은 글자 하나 통과 */
   function betaPass() {
-    const idx = collected.findIndex((c) => !c)
-    if (idx < 0) return
-    applyFind(idx)
+    if (collected[selected]) {
+      const i = collected.findIndex((c) => !c)
+      if (i >= 0) applyFind(i)
+      return
+    }
+    applyFind(selected)
     setPreview('')
     setCam(streamRef.current ? 'live' : 'off')
     setPhase('idle')
@@ -226,12 +268,12 @@ export default function App() {
     const next = pickRandomWord(word)
     setEntry(next)
     setCollected(toSyllables(next.ko).map(() => false))
+    setSelected(0)
     setPreview('')
     setLast(null)
     setPhase('idle')
     setErrorMsg('')
     setErrorDetail('')
-    setWinImgFailed(false)
     setCam(streamRef.current ? 'live' : 'off')
   }
 
@@ -268,7 +310,7 @@ export default function App() {
 
       {!allDone && (
         <>
-          {/* 미션 카드 — 사진 없이 단어만 (사진은 완성 후 보상) */}
+          {/* 미션 카드 — 음절을 눌러 고르기 */}
           <section className="card mission">
             <div className="mission-top">
               <span className="eyebrow">이번 미션</span>
@@ -278,14 +320,21 @@ export default function App() {
             </div>
             <div className="word-line">
               {syllables.map((s, i) => (
-                <span key={i} className={`syl ${collected[i] ? 'got' : 'now'}`}>
+                <button
+                  key={i}
+                  className={`syl ${collected[i] ? 'got' : selected === i ? 'sel' : 'idle'}`}
+                  onClick={() => !collected[i] && setSelected(i)}
+                  disabled={collected[i]}
+                >
                   {s}
-                </span>
+                </button>
               ))}
             </div>
-            <p className="seek-help">
-              간판에서 <b>{remainList.join(', ')}</b> 글자를 찾아 찍어요 · <i>순서 상관없어요</i>
-            </p>
+            <div className="seek">
+              <span className="seek-label">지금 찾을 글자</span>
+              <span className="seek-target">{target}</span>
+              <span className="seek-help">음절을 눌러 고르고, 간판에서 ‘{target}’ 를 찾아 찍어요</span>
+            </div>
           </section>
 
           {/* 카메라 카드 */}
@@ -300,22 +349,31 @@ export default function App() {
               </div>
             ) : (
               <>
-                <div className="cam-view">
+                <div
+                  className="cam-view"
+                  onTouchStart={onTouchStart}
+                  onTouchMove={onTouchMove}
+                  onTouchEnd={onTouchEnd}
+                >
                   <video
                     ref={videoRef}
                     className="cam-video"
                     playsInline
                     muted
                     autoPlay
-                    style={{ display: cam === 'live' ? 'block' : 'none' }}
+                    style={{
+                      display: cam === 'live' ? 'block' : 'none',
+                      transform: !nativeZoom && zoom > 1 ? `scale(${zoom})` : 'none',
+                    }}
                   />
+                  {cam === 'live' && zoom > 1.01 && <span className="zoom-badge">{zoom.toFixed(1)}×</span>}
                   {cam === 'frozen' && preview && (
                     <div className="frozen">
                       <img src={preview} alt="촬영 사진" />
                       {phase === 'loading' && (
                         <div className="shot-loading">
                           <span className="spinner" />
-                          <span>글자 찾는 중…</span>
+                          <span>‘{last?.target ?? target}’ 찾는 중…</span>
                         </div>
                       )}
                       {phase === 'idle' && last?.hit && last.circle && (
@@ -334,6 +392,20 @@ export default function App() {
 
                 {cam === 'live' && (
                   <div className="cam-controls">
+                    {zoomEnabled && (
+                      <div className="zoom-row">
+                        <span>🔍</span>
+                        <input
+                          type="range"
+                          min={zoomMin}
+                          max={zoomMax}
+                          step={(zoomMax - zoomMin) / 40 || 0.1}
+                          value={zoom}
+                          onChange={(e) => applyZoom(Number(e.target.value))}
+                        />
+                        <span className="zoom-val">{zoom.toFixed(1)}×</span>
+                      </div>
+                    )}
                     <button className="shutter" onClick={capture} aria-label="촬영">
                       <span />
                     </button>
@@ -355,7 +427,7 @@ export default function App() {
                     )}
                     {phase === 'idle' && last && (
                       <div className={`result ${last.hit ? 'ok' : 'miss'}`}>
-                        <p>{last.hit ? `‘${last.found}’ 찾았다! 🎉` : `남은 글자(${last.remain})가 안 보여요. 다시!`}</p>
+                        <p>{last.hit ? `‘${last.target}’ 찾았다! 🎉` : `이 사진엔 ‘${last.target}’ 가 안 보여요. 다시!`}</p>
                         <details className="dev">
                           <summary>
                             인식 텍스트 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
@@ -373,9 +445,8 @@ export default function App() {
               </>
             )}
 
-            {/* 베타: 버튼 한 번 = 한 글자 통과 */}
             <button className="beta-btn" onClick={betaPass}>
-              🐞 (베타) ‘{remainList[0]}’ 맞춘 걸로
+              🐞 (베타) ‘{target}’ 맞춘 걸로
             </button>
           </section>
 
@@ -404,16 +475,11 @@ export default function App() {
         </>
       )}
 
-      {/* 승리 — 사진 + 사전 정의 + 크레딧 */}
+      {/* 승리 — 사진 없이 뜻 + 크레딧 */}
       {allDone && (
         <section className="card win">
           <div className="win-emoji">🏆</div>
           <p className="win-word">{word}</p>
-          {!winImgFailed && (
-            <figure className="win-photo">
-              <img src={hintImageUrl(entry)} alt={word} onError={() => setWinImgFailed(true)} />
-            </figure>
-          )}
           <div className="def-box">
             <span className="def-label">📖 {word}</span>
             <p className="def-text">{entry.def}</p>

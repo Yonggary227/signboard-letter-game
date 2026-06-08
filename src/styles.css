@@ -161,21 +161,27 @@ body {
 .syl {
   min-width: 52px;
   height: 60px;
-  padding: 0 6px;
+  padding: 0 8px;
   display: flex;
   align-items: center;
   justify-content: center;
+  font: inherit;
   font-size: 30px;
   font-weight: 800;
   border-radius: 16px;
-  transition: 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  transition: 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.syl.todo {
-  color: #3f4660;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1.5px dashed rgba(255, 255, 255, 0.12);
+.syl.idle {
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.14);
 }
-.syl.now {
+.syl.idle:active {
+  transform: scale(0.94);
+}
+.syl.sel {
   color: #fff;
   background: var(--grad);
   box-shadow: 0 8px 26px rgba(168, 85, 247, 0.45);
@@ -184,7 +190,8 @@ body {
 .syl.got {
   color: #fff;
   background: rgba(52, 211, 153, 0.16);
-  border: 1.5px solid var(--ok);
+  border-color: var(--ok);
+  cursor: default;
   animation: pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1);
 }
 @keyframes pulse {
@@ -532,12 +539,47 @@ body {
   }
 }
 
+/* 줌 배지 (라이브 화면 위) */
+.zoom-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 9px;
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+}
+
+/* 줌 슬라이더 */
+.zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0 4px;
+}
+.zoom-row input[type='range'] {
+  flex: 1;
+  accent-color: var(--g2);
+  height: 4px;
+}
+.zoom-val {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 34px;
+  text-align: right;
+}
+
 /* 셔터 */
 .cam-controls {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding-top: 14px;
 }
 .shutter {
