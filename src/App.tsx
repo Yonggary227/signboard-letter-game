@@ -10,7 +10,6 @@ const ENGINE_LABEL: Record<string, string> = {
   tesseract: 'Tesseract',
 }
 
-type Cam = 'off' | 'live' | 'frozen'
 type Phase = 'idle' | 'loading' | 'error'
 type Geo = { lat: number; lng: number; acc: number } | { error: string } | null
 
@@ -47,22 +46,18 @@ function logMission(record: object) {
     /* noop */
   }
 }
-function mapEmbed(lat: number, lng: number): string {
-  const d = 0.004
-  const bbox = `${lng - d},${lat - d},${lng + d},${lat + d}`
-  return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`
+/** 깔끔한 정적 지도 (키 불필요) + 빨간 핀 */
+function mapImg(lat: number, lng: number): string {
+  return `https://static-maps.yandex.ru/1.x/?ll=${lng},${lat}&z=16&size=600,300&l=map&lang=en_US&pt=${lng},${lat},pm2rdm`
 }
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export default function App() {
   const [entry, setEntry] = useState<WordEntry>(() => pickRandomWord())
   const word = entry.ko
   const syllables = useMemo(() => toSyllables(word), [word])
   const [collected, setCollected] = useState<boolean[]>(() => syllables.map(() => false))
-  const [selected, setSelected] = useState(0) // 지금 찾을 음절(탭으로 선택)
+  const [selected, setSelected] = useState(0)
 
-  const [cam, setCam] = useState<Cam>('off')
-  const [camError, setCamError] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
   const [last, setLast] = useState<CaptureResult | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
@@ -74,90 +69,16 @@ export default function App() {
   const [completed, setCompleted] = useState<number>(() => num('completed', 0))
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
 
-  // 줌
-  const [zoom, setZoom] = useState(1)
-  const [zoomMin, setZoomMin] = useState(1)
-  const [zoomMax, setZoomMax] = useState(1)
-  const [nativeZoom, setNativeZoom] = useState(false)
-
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const trackRef = useRef<MediaStreamTrack | null>(null)
-  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   const allDone = collected.every(Boolean)
   const doneCount = collected.filter(Boolean).length
   const target = syllables[selected]
-  const zoomEnabled = zoomMax > zoomMin + 0.001
 
   useEffect(() => {
     initWorker().catch(() => {})
     requestLocation()
-    return () => stopCamera()
   }, [])
-
-  function stopCamera() {
-    streamRef.current?.getTracks().forEach((t) => t.stop())
-    streamRef.current = null
-    trackRef.current = null
-  }
-
-  async function startCamera() {
-    setCamError('')
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        audio: false,
-      })
-      streamRef.current = stream
-      const track = stream.getVideoTracks()[0]
-      trackRef.current = track
-      // 줌 지원 확인 (네이티브 우선, 없으면 디지털)
-      const caps: any = track.getCapabilities?.() ?? {}
-      if (caps.zoom) {
-        setNativeZoom(true)
-        setZoomMin(caps.zoom.min ?? 1)
-        setZoomMax(caps.zoom.max ?? 1)
-        setZoom(caps.zoom.min ?? 1)
-      } else {
-        setNativeZoom(false)
-        setZoomMin(1)
-        setZoomMax(5) // 디지털 줌 최대 5배
-        setZoom(1)
-      }
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
-      }
-      setCam('live')
-      requestLocation()
-    } catch (e: any) {
-      setCamError('카메라 권한을 허용해 주세요. (' + (e?.name || e) + ')')
-    }
-  }
-
-  function applyZoom(z: number) {
-    const z2 = clamp(z, zoomMin, zoomMax)
-    setZoom(z2)
-    if (nativeZoom && trackRef.current) {
-      trackRef.current.applyConstraints({ advanced: [{ zoom: z2 } as any] }).catch(() => {})
-    }
-  }
-
-  // 핀치 줌
-  const dist = (t: React.TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
-  function onTouchStart(e: React.TouchEvent) {
-    if (e.touches.length === 2) pinchRef.current = { dist: dist(e.touches), zoom }
-  }
-  function onTouchMove(e: React.TouchEvent) {
-    if (e.touches.length === 2 && pinchRef.current) {
-      const ratio = dist(e.touches) / pinchRef.current.dist
-      applyZoom(pinchRef.current.zoom * ratio)
-    }
-  }
-  function onTouchEnd() {
-    pinchRef.current = null
-  }
 
   function requestLocation() {
     if (!navigator.geolocation) {
@@ -189,25 +110,12 @@ export default function App() {
     }
   }
 
-  async function capture() {
-    const v = videoRef.current
-    if (!v || allDone || !v.videoWidth) return
-    const vw = v.videoWidth
-    const vh = v.videoHeight
-    const canvas = document.createElement('canvas')
-    canvas.width = vw
-    canvas.height = vh
-    const ctx = canvas.getContext('2d')!
-    // 디지털 줌이면 중앙 영역을 잘라 확대해서 그린다(보이는 그대로 OCR)
-    if (!nativeZoom && zoom > 1) {
-      const zw = vw / zoom
-      const zh = vh / zoom
-      ctx.drawImage(v, (vw - zw) / 2, (vh - zh) / 2, zw, zh, 0, 0, vw, vh)
-    } else {
-      ctx.drawImage(v, 0, 0)
-    }
-    setPreview(canvas.toDataURL('image/jpeg', 0.9))
-    setCam('frozen')
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || allDone) return
+    if (preview) URL.revokeObjectURL(preview)
+    setPreview(URL.createObjectURL(file))
     setPhase('loading')
     setErrorMsg('')
     setErrorDetail('')
@@ -215,9 +123,6 @@ export default function App() {
 
     const seeking = target
     const seekIdx = selected
-    const blob = await new Promise<Blob>((r) => canvas.toBlob((b) => r(b!), 'image/jpeg', 0.9))
-    const file = new File([blob], 'shot.jpg', { type: 'image/jpeg' })
-
     try {
       const result = await recognizeText(file, OCR_TIMEOUT_MS)
       const box: WordBox | undefined = result.words.find((w) => w.text.includes(seeking))
@@ -245,23 +150,16 @@ export default function App() {
   }
 
   function betaPass() {
-    if (collected[selected]) {
-      const i = collected.findIndex((c) => !c)
-      if (i >= 0) applyFind(i)
-      return
-    }
-    applyFind(selected)
-    setPreview('')
-    setCam(streamRef.current ? 'live' : 'off')
-    setPhase('idle')
-    setLast(null)
+    const idx = collected[selected] ? collected.findIndex((c) => !c) : selected
+    if (idx >= 0) applyFind(idx)
+    clearShot()
   }
 
-  function retake() {
+  function clearShot() {
+    if (preview) URL.revokeObjectURL(preview)
     setPreview('')
     setLast(null)
     setPhase('idle')
-    setCam(streamRef.current ? 'live' : 'off')
   }
 
   function newGame() {
@@ -269,12 +167,9 @@ export default function App() {
     setEntry(next)
     setCollected(toSyllables(next.ko).map(() => false))
     setSelected(0)
-    setPreview('')
-    setLast(null)
-    setPhase('idle')
+    clearShot()
     setErrorMsg('')
     setErrorDetail('')
-    setCam(streamRef.current ? 'live' : 'off')
   }
 
   function editOcrKey() {
@@ -310,7 +205,7 @@ export default function App() {
 
       {!allDone && (
         <>
-          {/* 미션 카드 — 음절을 눌러 고르기 */}
+          {/* 미션 — 음절 탭 선택 */}
           <section className="card mission">
             <div className="mission-top">
               <span className="eyebrow">이번 미션</span>
@@ -337,82 +232,38 @@ export default function App() {
             </div>
           </section>
 
-          {/* 카메라 카드 */}
+          {/* 카메라 — 폰 기본 카메라 */}
           <section className="card cam-card">
-            {cam === 'off' ? (
+            {!preview ? (
               <div className="cam-compact">
-                <button className="btn-primary" onClick={startCamera}>
-                  📷 카메라 켜기
+                <button className="btn-primary" onClick={() => fileRef.current?.click()}>
+                  📷 사진 찍기
                 </button>
-                <span className="cam-compact-hint">실시간 촬영만 가능</span>
-                {camError && <p className="cam-err">{camError}</p>}
+                <span className="cam-compact-hint">기기 카메라로 ‘{target}’ 촬영</span>
               </div>
             ) : (
               <>
-                <div
-                  className="cam-view"
-                  onTouchStart={onTouchStart}
-                  onTouchMove={onTouchMove}
-                  onTouchEnd={onTouchEnd}
-                >
-                  <video
-                    ref={videoRef}
-                    className="cam-video"
-                    playsInline
-                    muted
-                    autoPlay
-                    style={{
-                      display: cam === 'live' ? 'block' : 'none',
-                      transform: !nativeZoom && zoom > 1 ? `scale(${zoom})` : 'none',
-                    }}
-                  />
-                  {cam === 'live' && zoom > 1.01 && <span className="zoom-badge">{zoom.toFixed(1)}×</span>}
-                  {cam === 'frozen' && preview && (
-                    <div className="frozen">
-                      <img src={preview} alt="촬영 사진" />
-                      {phase === 'loading' && (
-                        <div className="shot-loading">
-                          <span className="spinner" />
-                          <span>‘{last?.target ?? target}’ 찾는 중…</span>
-                        </div>
-                      )}
-                      {phase === 'idle' && last?.hit && last.circle && (
-                        <span
-                          className="find-circle"
-                          style={{
-                            left: `${last.circle.cx * 100}%`,
-                            top: `${last.circle.cy * 100}%`,
-                            width: `${last.circle.d * 100}%`,
-                          }}
-                        />
-                      )}
+                <div className="shot-wrap">
+                  <img className="shot-photo" src={preview} alt="촬영 사진" />
+                  {phase === 'loading' && (
+                    <div className="shot-loading">
+                      <span className="spinner" />
+                      <span>‘{last?.target ?? target}’ 찾는 중…</span>
                     </div>
+                  )}
+                  {phase === 'idle' && last?.hit && last.circle && (
+                    <span
+                      className="find-circle"
+                      style={{
+                        left: `${last.circle.cx * 100}%`,
+                        top: `${last.circle.cy * 100}%`,
+                        width: `${last.circle.d * 100}%`,
+                      }}
+                    />
                   )}
                 </div>
 
-                {cam === 'live' && (
-                  <div className="cam-controls">
-                    {zoomEnabled && (
-                      <div className="zoom-row">
-                        <span>🔍</span>
-                        <input
-                          type="range"
-                          min={zoomMin}
-                          max={zoomMax}
-                          step={(zoomMax - zoomMin) / 40 || 0.1}
-                          value={zoom}
-                          onChange={(e) => applyZoom(Number(e.target.value))}
-                        />
-                        <span className="zoom-val">{zoom.toFixed(1)}×</span>
-                      </div>
-                    )}
-                    <button className="shutter" onClick={capture} aria-label="촬영">
-                      <span />
-                    </button>
-                  </div>
-                )}
-
-                {cam === 'frozen' && phase !== 'loading' && (
+                {phase !== 'loading' && (
                   <div className="result-area">
                     {phase === 'error' && (
                       <div className="result err">
@@ -437,8 +288,8 @@ export default function App() {
                         </details>
                       </div>
                     )}
-                    <button className="btn-primary" onClick={retake}>
-                      다시 촬영
+                    <button className="btn-primary" onClick={() => fileRef.current?.click()}>
+                      다시 찍기
                     </button>
                   </div>
                 )}
@@ -450,19 +301,14 @@ export default function App() {
             </button>
           </section>
 
-          {/* 내 위치 지도 */}
+          {/* 내 위치 — 정적 지도 + 핀 */}
           <section className="card map-card">
             <div className="map-head">
               <span>📍 내 위치</span>
               <span className="map-acc">{geoOk ? `정확도 ±${(geo as any).acc}m` : '위치 확인 중…'}</span>
             </div>
             {geoOk ? (
-              <iframe
-                className="map-frame"
-                title="내 위치"
-                src={mapEmbed((geo as any).lat, (geo as any).lng)}
-                loading="lazy"
-              />
+              <img className="map-frame" src={mapImg((geo as any).lat, (geo as any).lng)} alt="내 위치 지도" />
             ) : (
               <div className="map-empty">
                 <p>{geo && 'error' in geo ? `위치 미확보: ${geo.error}` : '위치 권한을 허용해 주세요'}</p>
@@ -475,7 +321,7 @@ export default function App() {
         </>
       )}
 
-      {/* 승리 — 사진 없이 뜻 + 크레딧 */}
+      {/* 승리 — 뜻 + 크레딧 */}
       {allDone && (
         <section className="card win">
           <div className="win-emoji">🏆</div>
@@ -492,11 +338,13 @@ export default function App() {
       )}
 
       <div className="footnote">
-        <p className="anti">🔒 실시간 촬영만 가능 · 보관함/갤러리 불가 · 위치 기록</p>
+        <p className="anti">🔒 실시간 촬영 권장 · 위치 기록</p>
         <button className="link-btn" onClick={editOcrKey}>
           {ocrKeySet ? '🎯 정확 모드 (OCR.space) · 변경' : '🎯 정확도 높이기 — 무료 OCR 키'}
         </button>
       </div>
+
+      <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onFile} hidden />
     </div>
   )
 }
