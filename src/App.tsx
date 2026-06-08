@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { initWorker, recognizeText } from './ocr'
 import { pickRandomWord, toSyllables } from './words'
 
-const OCR_TIMEOUT_MS = 15000
+const OCR_TIMEOUT_MS = 20000
 
 type Phase = 'idle' | 'loading' | 'error'
 
@@ -111,16 +111,17 @@ export default function App() {
       </header>
 
       <section className="mission">
-        <p className="mission-label">미션 단어</p>
+        <p className="mission-label">이번 미션 단어</p>
+        <p className="mission-word">{word}</p>
         <div className="slots">
           {syllables.map((s, i) => (
-            <div key={i} className={`slot ${collected[i] ? 'filled' : ''}`}>
-              {collected[i] ? s : ''}
+            <div key={i} className={`slot ${collected[i] ? 'filled' : 'pending'}`}>
+              {s}
             </div>
           ))}
         </div>
         <p className="progress">
-          {collected.filter(Boolean).length} / {syllables.length} 음절 수집
+          {collected.filter(Boolean).length} / {syllables.length} 음절 수집 · 간판에서 이 글자들을 찾아 찍어보세요
         </p>
       </section>
 

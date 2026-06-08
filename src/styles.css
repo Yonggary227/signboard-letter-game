@@ -76,7 +76,14 @@ button {
   padding: 20px;
   text-align: center;
 }
-.mission-label { margin: 0 0 14px; color: #94a3b8; font-size: 13px; }
+.mission-label { margin: 0 0 6px; color: #94a3b8; font-size: 13px; }
+.mission-word {
+  margin: 0 0 16px;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--accent);
+}
 .slots {
   display: flex;
   gap: 10px;
@@ -95,6 +102,9 @@ button {
   font-size: 28px;
   font-weight: 800;
   transition: all 0.2s;
+}
+.slot.pending {
+  color: #64748b; /* 아직 못 모은 글자: 흐리게 보임 */
 }
 .slot.filled {
   border-style: solid;
