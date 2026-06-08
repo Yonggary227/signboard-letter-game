@@ -2,30 +2,32 @@
 // 미션 단어 풀
 // 단어를 추가/삭제하려면 이 배열만 수정하면 됩니다.
 //  - ko: 화면에 보일 한글 단어 (음절 수에 맞춰 칸이 자동 생성)
-//  - en: 참고 사진을 가져올 영어 키워드 (이미지 검색용)
+//  - en: 대체 텍스트(alt)용 영어 의미
+//  - photo: 참고 사진 Unsplash 사진 ID (단어 의미에 맞게 큐레이션·검증됨)
 // ──────────────────────────────────────────────────────────────────────────
 export interface WordEntry {
   ko: string
   en: string
+  photo: string
 }
 
 export const WORD_POOL: WordEntry[] = [
-  { ko: '선풍기', en: 'electric fan' },
-  { ko: '커피', en: 'coffee' },
-  { ko: '산책', en: 'park walk path' },
-  { ko: '보물', en: 'treasure chest' },
-  { ko: '햇살', en: 'sunlight' },
-  { ko: '골목', en: 'alley street' },
-  { ko: '우산', en: 'umbrella rain' },
-  { ko: '바람', en: 'wind field' },
-  { ko: '노을', en: 'sunset sky' },
-  { ko: '거리', en: 'city street' },
-  { ko: '동네', en: 'neighborhood town' },
-  { ko: '빵집', en: 'bakery bread' },
-  { ko: '약국', en: 'pharmacy' },
-  { ko: '시계', en: 'clock' },
-  { ko: '나무', en: 'tree' },
-  { ko: '보물찾기', en: 'treasure map' },
+  { ko: '고양이', en: 'cat', photo: '1514888286974-6c03e2ca1dba' },
+  { ko: '커피', en: 'coffee', photo: '1509042239860-f550ce710b93' },
+  { ko: '산책', en: 'walk at sunset', photo: '1476611338391-6f395a0ebc7b' },
+  { ko: '보물', en: 'treasure gold', photo: '1607344645866-009c320b63e0' },
+  { ko: '햇살', en: 'sunlight', photo: '1504370805625-d32c54b16100' },
+  { ko: '골목', en: 'street', photo: '1519677100203-a0e668c92439' },
+  { ko: '우산', en: 'rain', photo: '1534274988757-a28bf1a57c17' },
+  { ko: '바람', en: 'wind field', photo: '1500382017468-9049fed747ef' },
+  { ko: '노을', en: 'sunset', photo: '1495616811223-4d98c6e9c869' },
+  { ko: '거리', en: 'city street', photo: '1449824913935-59a10b8d2000' },
+  { ko: '동네', en: 'town', photo: '1480714378408-67cf0d13bc1b' },
+  { ko: '빵집', en: 'bakery bread', photo: '1509440159596-0249088772ff' },
+  { ko: '약국', en: 'pharmacy', photo: '1587854692152-cbe660dbde88' },
+  { ko: '시계', en: 'clock', photo: '1509048191080-d2984bad6ae5' },
+  { ko: '나무', en: 'tree', photo: '1518495973542-4542c06a5843' },
+  { ko: '보물찾기', en: 'old treasure map', photo: '1577086664693-894d8405334a' },
 ]
 
 /** 풀에서 단어 하나를 랜덤으로 고른다. (직전 단어와 다르게 뽑도록 시도) */
@@ -40,20 +42,7 @@ export function toSyllables(word: string): string[] {
   return Array.from(word)
 }
 
-/** 작은 해시(키워드별 안정적인 이미지 lock 값 생성용) */
-function hashStr(s: string): number {
-  let h = 0
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
-  return h % 1000
-}
-
-/** 단어의 참고 사진 URL (키워드 기반, lock으로 단어마다 고정 이미지) */
-export function hintImageUrl(en: string): string {
-  const lock = hashStr(en)
-  return `https://loremflickr.com/640/440/${encodeURIComponent(en)}?lock=${lock}`
-}
-
-/** 1차 이미지가 실패하면 쓰는 폴백 URL */
-export function hintImageFallback(en: string): string {
-  return `https://picsum.photos/seed/${encodeURIComponent(en)}/640/440`
+/** 단어의 참고 사진 URL (Unsplash CDN, 640x440 크롭) */
+export function hintImageUrl(entry: WordEntry): string {
+  return `https://images.unsplash.com/photo-${entry.photo}?w=640&h=440&fit=crop&q=80`
 }

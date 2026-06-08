@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { initWorker, recognizeText, getOcrSpaceKey, setOcrSpaceKey } from './ocr'
-import { pickRandomWord, toSyllables, hintImageUrl, hintImageFallback } from './words'
+import { pickRandomWord, toSyllables, hintImageUrl } from './words'
 
 const OCR_TIMEOUT_MS = 20000
 
@@ -36,6 +36,7 @@ export default function App() {
   const [engineReady, setEngineReady] = useState(false)
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
   const [showHint, setShowHint] = useState(true)
+  const [hintFailed, setHintFailed] = useState(false)
 
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -71,6 +72,7 @@ export default function App() {
     setErrorDetail('')
     setPreview('')
     setShowHint(true)
+    setHintFailed(false)
   }
 
   function openCamera() {
@@ -166,20 +168,14 @@ export default function App() {
           ))}
         </div>
 
-        {/* 참고 사진 (1회성 힌트) */}
-        {showHint && !allDone && (
+        {/* 참고 사진 (1회성 힌트) — 로드 실패 시 잘못된 사진 대신 숨김 */}
+        {showHint && !allDone && !hintFailed && (
           <figure className="hint">
             <img
-              src={hintImageUrl(entry.en)}
-              alt={`${word} 예시`}
+              src={hintImageUrl(entry)}
+              alt={`${word} (${entry.en}) 예시`}
               loading="eager"
-              onError={(ev) => {
-                const img = ev.currentTarget
-                if (!img.dataset.fb) {
-                  img.dataset.fb = '1'
-                  img.src = hintImageFallback(entry.en)
-                }
-              }}
+              onError={() => setHintFailed(true)}
             />
             <figcaption>‘{word}’ 는 이런 느낌 · 참고용</figcaption>
             <button className="hint-close" onClick={() => setShowHint(false)} aria-label="힌트 닫기">
