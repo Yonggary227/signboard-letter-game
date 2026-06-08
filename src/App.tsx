@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { initWorker, recognizeText } from './ocr'
+import { initWorker, recognizeText, getOcrSpaceKey, setOcrSpaceKey } from './ocr'
 import { pickRandomWord, toSyllables } from './words'
 
 const OCR_TIMEOUT_MS = 20000
@@ -36,7 +36,19 @@ export default function App() {
   const [engineStatus, setEngineStatus] = useState<string>('OCR 엔진 준비 중…')
   const [engineReady, setEngineReady] = useState(false)
 
+  const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
+
   const fileRef = useRef<HTMLInputElement>(null)
+
+  function editOcrKey() {
+    const input = window.prompt(
+      'OCR.space 무료 API 키를 붙여넣으세요.\n\n• 이 기기에만 저장됩니다 (서버·깃허브·외부에 전송되지 않음).\n• 키 발급(무료, 카드 불필요): ocr.space/ocrapi/freekey\n• 비우고 확인하면 기본(Tesseract)으로 돌아갑니다.',
+      getOcrSpaceKey(),
+    )
+    if (input === null) return // 취소
+    setOcrSpaceKey(input)
+    setOcrKeySet(!!input.trim())
+  }
 
   // 앱 시작 시 OCR 워커를 미리 로드 (첫 인식 지연 방지)
   useEffect(() => {
@@ -197,6 +209,11 @@ export default function App() {
             📷 사진 찍기
           </button>
           <p className="engine-status">{engineReady ? '' : engineStatus}</p>
+          <button className="ocr-key-btn" onClick={editOcrKey}>
+            {ocrKeySet
+              ? '🎯 정확 모드 켜짐 (OCR.space) · 키 변경/해제'
+              : '🎯 정확도 높이기 — 무료 OCR 키 입력'}
+          </button>
         </div>
       )}
 

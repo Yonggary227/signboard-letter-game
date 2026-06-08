@@ -10,6 +10,29 @@
 import { createWorker, PSM, type Worker } from 'tesseract.js'
 import { OCR_SPACE_API_KEY, OCR_PROXY_URL, OCR_FALLBACK_TO_TESSERACT } from './config'
 
+// ── OCR.space 키: 이 기기(localStorage)에만 저장 — 저장소/번들/외부에 노출 안 됨 ──
+const LS_OCRSPACE_KEY = 'ocrspace_api_key'
+
+/** 유효한 OCR.space 키: 기기에 저장된 값 우선, 없으면 config 기본값(보통 빈 값). */
+export function getOcrSpaceKey(): string {
+  try {
+    return localStorage.getItem(LS_OCRSPACE_KEY) || OCR_SPACE_API_KEY
+  } catch {
+    return OCR_SPACE_API_KEY
+  }
+}
+
+/** 키를 이 기기에 저장(빈 값이면 삭제). */
+export function setOcrSpaceKey(key: string): void {
+  try {
+    const k = key.trim()
+    if (k) localStorage.setItem(LS_OCRSPACE_KEY, k)
+    else localStorage.removeItem(LS_OCRSPACE_KEY)
+  } catch {
+    /* localStorage 불가 환경 무시 */
+  }
+}
+
 let workerPromise: Promise<Worker> | null = null
 
 /**
@@ -137,7 +160,7 @@ async function toJpegDataUrl(file: File, maxSide: number, maxBytes: number): Pro
 async function recognizeWithOcrSpace(file: File, timeoutMs: number): Promise<string> {
   const dataUrl = await toJpegDataUrl(file, 1600, 1_000_000) // 1MB 한도 대응
   const form = new FormData()
-  form.append('apikey', OCR_SPACE_API_KEY)
+  form.append('apikey', getOcrSpaceKey())
   form.append('language', 'kor')
   form.append('OCREngine', '1') // 한국어는 Engine 1
   form.append('scale', 'true')
@@ -224,7 +247,7 @@ export async function recognizeText(file: File, timeoutMs = 20000): Promise<OcrR
 
   // 우선순위: OCR.space → CLOVA(프록시) → Tesseract
   const primary: { engine: 'ocrspace' | 'clova'; run: () => Promise<string> } | null =
-    OCR_SPACE_API_KEY
+    getOcrSpaceKey()
       ? { engine: 'ocrspace', run: () => recognizeWithOcrSpace(file, timeoutMs) }
       : OCR_PROXY_URL
         ? { engine: 'clova', run: () => recognizeWithClova(file, timeoutMs) }

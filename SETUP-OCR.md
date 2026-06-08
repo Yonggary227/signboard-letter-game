@@ -3,26 +3,30 @@
 추천 경로입니다. **신용카드 없이**, 이메일로 무료 키만 받으면 끝납니다.
 백엔드도 필요 없습니다(브라우저에서 바로 호출).
 
-## 단 2단계
+## 방법 A (추천) — 앱에서 바로 입력, 재배포 불필요
 
-### 1. 무료 키 받기 (1분, 카드 X)
-1. https://ocr.space/ocrapi/freekey 접속
-2. 이메일 입력 → **Subscribe to receive your free API key**
-3. 메일로 온 **API 키** 복사 (예: `K81234567...`)
+키가 **그 기기(브라우저)에만 저장**되고 깃허브·번들·외부에 전혀 노출되지 않습니다.
 
-> 무료 플랜: 월 25,000건, 한국어(Engine 1) 지원.
+1. https://ocr.space/ocrapi/freekey → 이메일 입력 → 무료 API 키를 메일로 받음 (**카드 X**)
+2. 앱(https://yonggary227.github.io/signboard-letter-game/) 하단의
+   **「🎯 정확도 높이기 — 무료 OCR 키 입력」** 버튼을 눌러 키를 붙여넣기
+3. 끝. 이후 촬영부터 **OCR.space**로 인식합니다. (결과 "개발용" 칸에 `OCR.space` 표시)
 
-### 2. 앱에 키 넣고 재배포
-`src/config.ts` 에서:
+> 폰·PC 각 기기에서 한 번씩 입력하면 됩니다. 키를 지우려면 같은 버튼에서 비우고 확인.
+> 무료 플랜: 월 25,000건, 한국어(Engine 1).
+
+## 방법 B (선택) — 코드에 키를 박아 모든 기기 공통 적용
+
+⚠️ 이 방식은 키가 **공개 저장소/번들에 노출**됩니다. 무료·교체 가능한 키라 위험은 낮지만 권장은 A.
+
+`src/config.ts`:
 ```ts
-export const OCR_SPACE_API_KEY: string = 'K81234567...'  // ← 받은 키 붙여넣기
+export const OCR_SPACE_API_KEY: string = 'K81234567...'  // ← 받은 키
 ```
-그리고:
 ```powershell
 npm run build
 npx gh-pages -d dist
 ```
-1~2분 뒤부터 앱이 **OCR.space**로 인식합니다. (결과의 "개발용" 칸에 `OCR.space`로 표시)
 
 ## 동작 / 안전장치
 - 키가 비어 있으면 **Tesseract**(무료·내장)만 사용.
