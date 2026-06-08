@@ -4,6 +4,12 @@ import { pickRandomWord, toSyllables } from './words'
 
 const OCR_TIMEOUT_MS = 20000
 
+const ENGINE_LABEL: Record<string, string> = {
+  ocrspace: 'OCR.space',
+  clova: 'CLOVA',
+  tesseract: 'Tesseract',
+}
+
 type Phase = 'idle' | 'loading' | 'error'
 
 interface CaptureResult {
@@ -169,7 +175,7 @@ export default function App() {
           )}
           <details className="dev">
             <summary>
-              인식된 텍스트 보기 (개발용 · {last.engine === 'clova' ? 'CLOVA' : 'Tesseract'} · {last.durationMs}ms)
+              인식된 텍스트 보기 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
             </summary>
             {last.note && <pre>⚠ {last.note}</pre>}
             <pre>{last.text || '(빈 결과)'}</pre>

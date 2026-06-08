@@ -8,7 +8,7 @@
 // 어느 경로든 try/catch + 타임아웃으로 감싸 "무한 로딩"을 원천 차단한다.
 // ──────────────────────────────────────────────────────────────────────────
 import { createWorker, PSM, type Worker } from 'tesseract.js'
-import { OCR_PROXY_URL, OCR_FALLBACK_TO_TESSERACT } from './config'
+import { OCR_SPACE_API_KEY, OCR_PROXY_URL, OCR_FALLBACK_TO_TESSERACT } from './config'
 
 let workerPromise: Promise<Worker> | null = null
 
@@ -100,8 +100,65 @@ async function preprocess(file: File): Promise<Blob> {
 export interface OcrResult {
   text: string
   durationMs: number
-  engine: 'clova' | 'tesseract'
+  engine: 'ocrspace' | 'clova' | 'tesseract'
   note?: string // 폴백 등 부가 안내(개발용)
+}
+
+/** 컬러 JPEG로 인코딩해 data URL 반환. OCR.space 무료는 1MB 제한이라 용량을 맞춘다. */
+async function toJpegDataUrl(file: File, maxSide: number, maxBytes: number): Promise<string> {
+  const bitmap = await createImageBitmap(file)
+  const scale = Math.max(bitmap.width, bitmap.height) > maxSide
+    ? maxSide / Math.max(bitmap.width, bitmap.height)
+    : 1
+  const w = Math.round(bitmap.width * scale)
+  const h = Math.round(bitmap.height * scale)
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, w, h)
+  // 용량이 한도를 넘으면 품질을 낮춰가며 재인코딩
+  for (const q of [0.85, 0.7, 0.55, 0.4]) {
+    const blob = await new Promise<Blob>((res, rej) =>
+      canvas.toBlob((b) => (b ? res(b) : rej(new Error('이미지 변환 실패'))), 'image/jpeg', q),
+    )
+    if (blob.size <= maxBytes || q === 0.4) {
+      return await new Promise<string>((res, rej) => {
+        const fr = new FileReader()
+        fr.onload = () => res(String(fr.result))
+        fr.onerror = () => rej(new Error('이미지 읽기 실패'))
+        fr.readAsDataURL(blob)
+      })
+    }
+  }
+  throw new Error('이미지 인코딩 실패')
+}
+
+/** OCR.space 무료 API (한국어, 카드 불필요). 브라우저에서 직접 호출. */
+async function recognizeWithOcrSpace(file: File, timeoutMs: number): Promise<string> {
+  const dataUrl = await toJpegDataUrl(file, 1600, 1_000_000) // 1MB 한도 대응
+  const form = new FormData()
+  form.append('apikey', OCR_SPACE_API_KEY)
+  form.append('language', 'kor')
+  form.append('OCREngine', '1') // 한국어는 Engine 1
+  form.append('scale', 'true')
+  form.append('detectOrientation', 'true')
+  form.append('isOverlayRequired', 'false')
+  form.append('base64Image', dataUrl)
+
+  const resp = await withTimeout(
+    fetch('https://api.ocr.space/parse/image', { method: 'POST', body: form }),
+    timeoutMs,
+  )
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '')
+    throw new Error(`OCR.space HTTP ${resp.status} ${body.slice(0, 200)}`)
+  }
+  const json: any = await resp.json()
+  if (json.IsErroredOnProcessing) {
+    throw new Error(`OCR.space 오류: ${[].concat(json.ErrorMessage || '알 수 없음').join(' ')}`)
+  }
+  const text = (json.ParsedResults || []).map((r: any) => r.ParsedText).filter(Boolean).join(' ')
+  return text
 }
 
 /** CLOVA는 컬러 원본이 정확도가 높다. 너무 큰 사진만 줄이고 JPEG로 인코딩해 base64로. */
@@ -165,15 +222,28 @@ export async function recognizeText(file: File, timeoutMs = 20000): Promise<OcrR
   const start = performance.now()
   const elapsed = () => Math.round(performance.now() - start)
 
-  if (OCR_PROXY_URL) {
+  // 우선순위: OCR.space → CLOVA(프록시) → Tesseract
+  const primary: { engine: 'ocrspace' | 'clova'; run: () => Promise<string> } | null =
+    OCR_SPACE_API_KEY
+      ? { engine: 'ocrspace', run: () => recognizeWithOcrSpace(file, timeoutMs) }
+      : OCR_PROXY_URL
+        ? { engine: 'clova', run: () => recognizeWithClova(file, timeoutMs) }
+        : null
+
+  if (primary) {
     try {
-      const text = await recognizeWithClova(file, timeoutMs)
-      return { text, durationMs: elapsed(), engine: 'clova' }
+      const text = await primary.run()
+      return { text, durationMs: elapsed(), engine: primary.engine }
     } catch (err: any) {
       if (!OCR_FALLBACK_TO_TESSERACT) throw err
-      // CLOVA 실패 → 게임이 멈추지 않도록 Tesseract로 폴백
+      // 클라우드 OCR 실패 → 게임이 멈추지 않도록 Tesseract로 폴백
       const text = await recognizeWithTesseract(file, timeoutMs)
-      return { text, durationMs: elapsed(), engine: 'tesseract', note: `CLOVA 실패로 폴백: ${err?.message ?? err}` }
+      return {
+        text,
+        durationMs: elapsed(),
+        engine: 'tesseract',
+        note: `${primary.engine} 실패로 폴백: ${err?.message ?? err}`,
+      }
     }
   }
 
