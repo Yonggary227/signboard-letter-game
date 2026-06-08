@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { initWorker, recognizeText, getOcrSpaceKey, setOcrSpaceKey } from './ocr'
-import { pickRandomWord, toSyllables, hintImageUrl } from './words'
+import { initWorker, recognizeText, getOcrSpaceKey, setOcrSpaceKey, type WordBox } from './ocr'
+import { pickRandomWord, toSyllables, hintImageUrl, type WordEntry } from './words'
 
 const OCR_TIMEOUT_MS = 20000
+const CREDITS_PER_WORD = 10
 
 const ENGINE_LABEL: Record<string, string> = {
   ocrspace: 'OCR.space',
@@ -10,7 +11,9 @@ const ENGINE_LABEL: Record<string, string> = {
   tesseract: 'Tesseract',
 }
 
+type Cam = 'off' | 'live' | 'frozen'
 type Phase = 'idle' | 'loading' | 'error'
+type Geo = { lat: number; lng: number; acc: number } | { error: string } | null
 
 interface CaptureResult {
   text: string
@@ -19,64 +22,192 @@ interface CaptureResult {
   target: string
   engine: string
   note?: string
+  circle: { cx: number; cy: number; d: number } | null
+}
+
+// ── 로컬 저장 (크레딧/완료수/기록) ──
+const num = (k: string, d: number) => {
+  try {
+    return Number(localStorage.getItem(k) ?? d)
+  } catch {
+    return d
+  }
+}
+const setNum = (k: string, v: number) => {
+  try {
+    localStorage.setItem(k, String(v))
+  } catch {
+    /* noop */
+  }
+}
+function logMission(record: object) {
+  try {
+    const log = JSON.parse(localStorage.getItem('mission_log') || '[]')
+    log.push(record)
+    localStorage.setItem('mission_log', JSON.stringify(log.slice(-200)))
+  } catch {
+    /* noop */
+  }
 }
 
 export default function App() {
-  const [entry, setEntry] = useState(() => pickRandomWord())
+  const [entry, setEntry] = useState<WordEntry>(() => pickRandomWord())
   const word = entry.ko
   const syllables = useMemo(() => toSyllables(word), [word])
   const [collected, setCollected] = useState<boolean[]>(() => syllables.map(() => false))
 
+  const [cam, setCam] = useState<Cam>('off')
+  const [camError, setCamError] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
   const [last, setLast] = useState<CaptureResult | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
   const [errorDetail, setErrorDetail] = useState('')
   const [preview, setPreview] = useState('')
-  const [engineStatus, setEngineStatus] = useState('OCR 엔진 준비 중…')
-  const [engineReady, setEngineReady] = useState(false)
+  const [geo, setGeo] = useState<Geo>(null)
+
+  const [credits, setCredits] = useState<number>(() => num('credits', 0))
+  const [completed, setCompleted] = useState<number>(() => num('completed', 0))
+
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
   const [showHint, setShowHint] = useState(true)
   const [hintFailed, setHintFailed] = useState(false)
 
-  const fileRef = useRef<HTMLInputElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
 
   const currentIndex = collected.findIndex((c) => !c)
   const allDone = currentIndex === -1
   const target = allDone ? null : syllables[currentIndex]
   const doneCount = collected.filter(Boolean).length
 
+  // OCR 엔진 워밍업
   useEffect(() => {
-    let alive = true
-    initWorker((status, progress) => {
-      if (!alive) return
-      setEngineStatus(`OCR 엔진 준비 중… ${status} ${Math.round(progress * 100)}%`)
-    })
-      .then(() => alive && (setEngineReady(true), setEngineStatus('준비 완료')))
-      .catch((e) => {
-        if (!alive) return
-        setEngineStatus('엔진 로딩 실패 — 사진을 찍으면 다시 시도합니다.')
-        setErrorDetail(String(e?.message ?? e))
-      })
-    return () => {
-      alive = false
-    }
+    initWorker().catch(() => {})
   }, [])
+
+  // 언마운트 시 카메라 정리
+  useEffect(() => () => stopCamera(), [])
+
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current = null
+  }
+
+  async function startCamera() {
+    setCamError('')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      })
+      streamRef.current = stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        await videoRef.current.play()
+      }
+      setCam('live')
+      requestLocation() // 위치 권한 미리 확보
+    } catch (e: any) {
+      setCamError('카메라를 열 수 없어요. 브라우저에서 카메라 권한을 허용해 주세요. (' + (e?.name || e) + ')')
+    }
+  }
+
+  function requestLocation() {
+    if (!navigator.geolocation) {
+      setGeo({ error: '이 기기에서 위치를 지원하지 않아요' })
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      (p) => setGeo({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }),
+      (err) => setGeo({ error: err.message }),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 10000 },
+    )
+  }
+
+  async function capture() {
+    const v = videoRef.current
+    if (!v || !target || !v.videoWidth) return
+    const canvas = document.createElement('canvas')
+    canvas.width = v.videoWidth
+    canvas.height = v.videoHeight
+    canvas.getContext('2d')!.drawImage(v, 0, 0)
+    setPreview(canvas.toDataURL('image/jpeg', 0.9))
+    setCam('frozen')
+    setPhase('loading')
+    setErrorMsg('')
+    setErrorDetail('')
+    setShowHint(false)
+    requestLocation() // 촬영 시점 위치 갱신
+
+    const seeking = target
+    const blob = await new Promise<Blob>((r) => canvas.toBlob((b) => r(b!), 'image/jpeg', 0.9))
+    const file = new File([blob], 'shot.jpg', { type: 'image/jpeg' })
+
+    try {
+      const result = await recognizeText(file, OCR_TIMEOUT_MS)
+      const box: WordBox | undefined = result.words.find((w) => w.text.includes(seeking))
+      const hit = !!box || result.text.includes(seeking)
+      const circle = box
+        ? { cx: box.cx, cy: box.cy, d: Math.min(0.5, Math.max(box.w, box.h) * 1.6 + 0.04) }
+        : null
+
+      if (hit) {
+        const idx = collected.findIndex((c) => !c)
+        const nextCollected = collected.map((c, i) => (i === idx ? true : c))
+        setCollected(nextCollected)
+
+        const g = geo
+        const at = g && 'lat' in g ? { lat: g.lat, lng: g.lng, acc: g.acc } : null
+        logMission({ word, syllable: seeking, ts: new Date().toISOString(), location: at, engine: result.engine })
+
+        // 단어 완성 → 크레딧 적립
+        if (nextCollected.every(Boolean)) {
+          const nc = credits + CREDITS_PER_WORD
+          const ncomp = completed + 1
+          setCredits(nc)
+          setNum('credits', nc)
+          setCompleted(ncomp)
+          setNum('completed', ncomp)
+        }
+      }
+
+      setLast({
+        text: result.text,
+        durationMs: result.durationMs,
+        hit,
+        target: seeking,
+        engine: result.engine,
+        note: result.note,
+        circle,
+      })
+      setPhase('idle')
+    } catch (err: any) {
+      setPhase('error')
+      setErrorMsg('글자를 인식하지 못했어요. 다시 찍어주세요.')
+      setErrorDetail(formatError(err))
+      setLast(null)
+    }
+  }
+
+  function retake() {
+    setPreview('')
+    setLast(null)
+    setPhase('idle')
+    setCam(streamRef.current ? 'live' : 'off')
+  }
 
   function newGame() {
     const next = pickRandomWord(word)
     setEntry(next)
     setCollected(toSyllables(next.ko).map(() => false))
-    setPhase('idle')
+    setPreview('')
     setLast(null)
+    setPhase('idle')
     setErrorMsg('')
     setErrorDetail('')
-    setPreview('')
     setShowHint(true)
     setHintFailed(false)
-  }
-
-  function openCamera() {
-    fileRef.current?.click()
+    setCam(streamRef.current ? 'live' : 'off')
   }
 
   function editOcrKey() {
@@ -89,45 +220,12 @@ export default function App() {
     setOcrKeySet(!!input.trim())
   }
 
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file || !target) return
-
-    setShowHint(false)
-    setPreview(URL.createObjectURL(file))
-    setPhase('loading')
-    setErrorMsg('')
-    setErrorDetail('')
-
-    const seeking = target
-    try {
-      const result = await recognizeText(file, OCR_TIMEOUT_MS)
-      const hit = result.text.includes(seeking)
-      if (hit) {
-        setCollected((prev) => {
-          const n = [...prev]
-          const idx = n.findIndex((c) => !c) // 현재 찾는 글자
-          if (idx >= 0) n[idx] = true
-          return n
-        })
-      }
-      setLast({
-        text: result.text,
-        durationMs: result.durationMs,
-        hit,
-        target: seeking,
-        engine: result.engine,
-        note: result.note,
-      })
-      setPhase('idle')
-    } catch (err: any) {
-      setPhase('error')
-      setErrorMsg('글자를 인식하지 못했어요. 다시 찍어주세요.')
-      setErrorDetail(formatError(err))
-      setLast(null)
-    }
-  }
+  const geoText =
+    geo == null
+      ? '위치 확인 중…'
+      : 'error' in geo
+        ? `위치 미확보 (${geo.error})`
+        : `위치 기록됨 · 정확도 ±${geo.acc}m`
 
   return (
     <div className="app">
@@ -138,12 +236,12 @@ export default function App() {
           <span className="brand-badge">간판</span>
           글자 수집
         </div>
-        <button className="ghost" onClick={newGame}>
-          새 단어
-        </button>
+        <div className="credit-pill" title={`완성한 미션 ${completed}회`}>
+          <span className="coin">☕</span> {credits}
+          <span className="credit-sub">크레딧</span>
+        </div>
       </header>
 
-      {/* 진행 바 */}
       <div className="progressbar">
         <div className="progressbar-fill" style={{ width: `${(doneCount / syllables.length) * 100}%` }} />
       </div>
@@ -159,16 +257,12 @@ export default function App() {
 
         <div className="word-line">
           {syllables.map((s, i) => (
-            <span
-              key={i}
-              className={`syl ${collected[i] ? 'got' : i === currentIndex ? 'now' : 'todo'}`}
-            >
+            <span key={i} className={`syl ${collected[i] ? 'got' : i === currentIndex ? 'now' : 'todo'}`}>
               {s}
             </span>
           ))}
         </div>
 
-        {/* 참고 사진 (1회성 힌트) — 로드 실패 시 잘못된 사진 대신 숨김 */}
         {showHint && !allDone && !hintFailed && (
           <figure className="hint">
             <img
@@ -188,84 +282,129 @@ export default function App() {
           <div className="seek">
             <span className="seek-label">지금 찾을 글자</span>
             <span className="seek-target">{target}</span>
-            <span className="seek-help">간판에서 ‘{target}’ 한 글자만 찾아 찍어요</span>
+            <span className="seek-help">길거리 간판에서 ‘{target}’ 한 글자를 찾아 찍어요</span>
           </div>
         )}
       </section>
 
-      {/* 촬영 결과 영역 */}
-      {preview && !allDone && (
-        <section className="card shot">
-          <div className="shot-img">
-            <img src={preview} alt="찍은 사진" />
-            {phase === 'loading' && (
-              <div className="shot-loading">
-                <span className="spinner" />
-                <span>‘{target}’ 찾는 중…</span>
+      {/* 카메라 / 결과 카드 */}
+      {!allDone && (
+        <section className="card cam-card">
+          <div className="cam-view">
+            {/* 항상 마운트(스트림 연결 유지), 표시만 토글 */}
+            <video
+              ref={videoRef}
+              className="cam-video"
+              playsInline
+              muted
+              autoPlay
+              style={{ display: cam === 'live' ? 'block' : 'none' }}
+            />
+
+            {cam === 'off' && (
+              <div className="cam-placeholder">
+                <span className="cam-icon">📷</span>
+                <p>실시간 카메라로 ‘{target}’ 를 찾으세요</p>
+                <button className="btn-primary" onClick={startCamera}>
+                  카메라 켜기
+                </button>
+                {camError && <p className="cam-err">{camError}</p>}
+              </div>
+            )}
+
+            {cam === 'frozen' && preview && (
+              <div className="frozen">
+                <img src={preview} alt="촬영 사진" />
+                {phase === 'loading' && (
+                  <div className="shot-loading">
+                    <span className="spinner" />
+                    <span>‘{last?.target ?? target}’ 찾는 중…</span>
+                  </div>
+                )}
+                {phase === 'idle' && last?.hit && last.circle && (
+                  <span
+                    className="find-circle"
+                    style={{
+                      left: `${last.circle.cx * 100}%`,
+                      top: `${last.circle.cy * 100}%`,
+                      width: `${last.circle.d * 100}%`,
+                    }}
+                  />
+                )}
               </div>
             )}
           </div>
 
-          {phase === 'error' && (
-            <div className="result err">
-              <p>⚠️ {errorMsg}</p>
-              <button className="btn-mini" onClick={openCamera}>
-                다시 찍기
+          {/* 카메라 컨트롤 */}
+          {cam === 'live' && (
+            <div className="cam-controls">
+              <button className="shutter" onClick={capture} aria-label="촬영">
+                <span />
               </button>
-              {errorDetail && (
-                <details className="dev">
-                  <summary>개발용 에러 보기</summary>
-                  <pre>{errorDetail}</pre>
-                </details>
-              )}
+              <p className="geo">📍 {geoText}</p>
             </div>
           )}
 
-          {phase === 'idle' && last && (
-            <div className={`result ${last.hit ? 'ok' : 'miss'}`}>
-              <p>
-                {last.hit ? `‘${last.target}’ 찾았다! 🎉` : `이 사진엔 ‘${last.target}’ 가 안 보여요. 다시 도전!`}
-              </p>
-              <details className="dev">
-                <summary>
-                  인식 텍스트 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
-                </summary>
-                {last.note && <pre>⚠ {last.note}</pre>}
-                <pre>{last.text || '(빈 결과)'}</pre>
-              </details>
+          {cam === 'frozen' && phase !== 'loading' && (
+            <div className="result-area">
+              {phase === 'error' && (
+                <div className="result err">
+                  <p>⚠️ {errorMsg}</p>
+                  {errorDetail && (
+                    <details className="dev">
+                      <summary>개발용 에러 보기</summary>
+                      <pre>{errorDetail}</pre>
+                    </details>
+                  )}
+                </div>
+              )}
+              {phase === 'idle' && last && (
+                <div className={`result ${last.hit ? 'ok' : 'miss'}`}>
+                  <p>
+                    {last.hit
+                      ? `‘${last.target}’ 찾았다! 🎉`
+                      : `이 사진엔 ‘${last.target}’ 가 안 보여요. 다른 간판에 도전!`}
+                  </p>
+                  <details className="dev">
+                    <summary>
+                      인식 텍스트 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
+                    </summary>
+                    {last.note && <pre>⚠ {last.note}</pre>}
+                    <pre>{last.text || '(빈 결과)'}</pre>
+                  </details>
+                </div>
+              )}
+              <button className="btn-primary" onClick={retake}>
+                다시 촬영
+              </button>
             </div>
           )}
         </section>
       )}
 
-      {/* 승리 */}
+      {/* 승리 + 사전 정의 */}
       {allDone && (
         <section className="card win">
           <div className="win-emoji">🏆</div>
           <p className="win-word">{word}</p>
-          <p className="win-sub">모든 글자를 모았어요!</p>
+          <p className="win-sub">+{CREDITS_PER_WORD} 크레딧 적립!</p>
+          <div className="def-box">
+            <span className="def-label">📖 {word}</span>
+            <p className="def-text">{entry.def}</p>
+          </div>
           <button className="btn-primary" onClick={newGame}>
             다음 단어 도전 →
           </button>
         </section>
       )}
 
-      {/* 하단 액션 */}
-      {!allDone && (
-        <div className="dock">
-          <button className="btn-primary big" onClick={openCamera} disabled={phase === 'loading'}>
-            <span className="cam">📷</span> ‘{target}’ 찾으러 사진 찍기
-          </button>
-          <div className="dock-meta">
-            {!engineReady && <span className="muted">{engineStatus}</span>}
-            <button className="link-btn" onClick={editOcrKey}>
-              {ocrKeySet ? '🎯 정확 모드 (OCR.space) · 변경' : '🎯 정확도 높이기 — 무료 OCR 키'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onFile} hidden />
+      {/* 부정방지 안내 + OCR 키 */}
+      <div className="footnote">
+        <p className="anti">🔒 실시간 촬영만 가능 · 보관함/갤러리 불가 · 위치 기록</p>
+        <button className="link-btn" onClick={editOcrKey}>
+          {ocrKeySet ? '🎯 정확 모드 (OCR.space) · 변경' : '🎯 정확도 높이기 — 무료 OCR 키'}
+        </button>
+      </div>
     </div>
   )
 }

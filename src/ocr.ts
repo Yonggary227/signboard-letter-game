@@ -1,19 +1,18 @@
 // ──────────────────────────────────────────────────────────────────────────
-// OCR (하이브리드)
+// OCR (하이브리드) — 텍스트 + 글자 위치(좌표)까지 반환
 //
-//  1) Naver CLOVA OCR (정확도 최고) — config.ts의 OCR_PROXY_URL이 설정돼 있으면
-//     프록시(백엔드)를 통해 호출한다. 시크릿 키는 프록시에만 있고 여기엔 없다.
-//  2) Tesseract.js (브라우저 내장) — 프록시 미설정/실패 시 자동 폴백. 키 불필요.
+//  1) OCR.space (정확도↑, 무료·카드 불필요) — 기기에 저장된 키가 있으면 사용
+//  2) Tesseract.js (브라우저 내장) — 키 없거나 실패 시 자동 폴백
 //
-// 어느 경로든 try/catch + 타임아웃으로 감싸 "무한 로딩"을 원천 차단한다.
+// 두 경로 모두 단어별 bounding box를 0~1 정규화 좌표(words[])로 반환 →
+// 화면에서 "찾은 위치"에 빨간 동그라미를 그릴 수 있다.
+// 모든 호출은 try/catch + 타임아웃으로 감싸 "무한 로딩"을 차단한다.
 // ──────────────────────────────────────────────────────────────────────────
 import { createWorker, PSM, type Worker } from 'tesseract.js'
-import { OCR_SPACE_API_KEY, OCR_PROXY_URL, OCR_FALLBACK_TO_TESSERACT } from './config'
+import { OCR_SPACE_API_KEY, OCR_FALLBACK_TO_TESSERACT } from './config'
 
-// ── OCR.space 키: 이 기기(localStorage)에만 저장 — 저장소/번들/외부에 노출 안 됨 ──
+// ── OCR.space 키: 이 기기(localStorage)에만 저장 ──
 const LS_OCRSPACE_KEY = 'ocrspace_api_key'
-
-/** 유효한 OCR.space 키: 기기에 저장된 값 우선, 없으면 config 기본값(보통 빈 값). */
 export function getOcrSpaceKey(): string {
   try {
     return localStorage.getItem(LS_OCRSPACE_KEY) || OCR_SPACE_API_KEY
@@ -21,32 +20,24 @@ export function getOcrSpaceKey(): string {
     return OCR_SPACE_API_KEY
   }
 }
-
-/** 키를 이 기기에 저장(빈 값이면 삭제). */
 export function setOcrSpaceKey(key: string): void {
   try {
     const k = key.trim()
     if (k) localStorage.setItem(LS_OCRSPACE_KEY, k)
     else localStorage.removeItem(LS_OCRSPACE_KEY)
   } catch {
-    /* localStorage 불가 환경 무시 */
+    /* noop */
   }
 }
 
 let workerPromise: Promise<Worker> | null = null
 
-/**
- * OCR 워커를 1회만 초기화한다.
- * 한국어 학습 데이터(약 15MB)를 처음에 받아오므로, 앱 시작 시 미리 호출해
- * 첫 인식이 다운로드 때문에 느려지는 일을 막는다.
- */
 export function initWorker(onProgress?: (status: string, progress: number) => void): Promise<Worker> {
   if (!workerPromise) {
     workerPromise = createWorker('kor', 1, {
       logger: (m) => onProgress?.(m.status, m.progress ?? 0),
     })
       .then(async (worker) => {
-        // 간판처럼 글자가 흩어진 장면 텍스트는 SPARSE_TEXT(11)가 인식률이 높다.
         await worker.setParameters({
           tessedit_pageseg_mode: PSM.SPARSE_TEXT,
           preserve_interword_spaces: '1',
@@ -54,7 +45,6 @@ export function initWorker(onProgress?: (status: string, progress: number) => vo
         return worker
       })
       .catch((err) => {
-        // 초기화 실패 시 다음 시도에서 다시 만들 수 있도록 캐시를 비운다.
         workerPromise = null
         throw err
       })
@@ -62,12 +52,12 @@ export function initWorker(onProgress?: (status: string, progress: number) => vo
   return workerPromise
 }
 
-/** Promise에 타임아웃을 건다. 시간 내 응답이 없으면 reject. */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`OCR 응답 시간 초과 (${(ms / 1000).toFixed(0)}초). 네트워크 또는 엔진 로딩이 지연되고 있어요.`))
-    }, ms)
+    const timer = setTimeout(
+      () => reject(new Error(`OCR 응답 시간 초과 (${(ms / 1000).toFixed(0)}초).`)),
+      ms,
+    )
     promise.then(
       (v) => {
         clearTimeout(timer)
@@ -81,14 +71,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   })
 }
 
-/**
- * OCR 정확도를 높이기 위한 이미지 전처리.
- *  - 해상도 정규화: 너무 크면 줄이고(2000px), 너무 작으면 키운다(최소 1400px).
- *    Tesseract는 글자 높이가 너무 작거나 과하게 크면 인식률이 떨어진다.
- *  - 흑백 변환 + 대비 강화: 간판 배경/조명 노이즈를 줄여 글자 윤곽을 또렷하게.
- *  - PNG(무손실)로 출력 — JPEG 압축 노이즈가 OCR을 방해하지 않도록.
- */
-async function preprocess(file: File): Promise<Blob> {
+/** 정규화(0~1) 단어 박스 */
+export interface WordBox {
+  text: string
+  cx: number // 중심 x
+  cy: number // 중심 y
+  w: number
+  h: number
+}
+
+export interface OcrResult {
+  text: string
+  durationMs: number
+  engine: 'ocrspace' | 'clova' | 'tesseract'
+  note?: string
+  words: WordBox[]
+}
+
+// ── 전처리 (Tesseract용): 흑백·대비·해상도 정규화. 치수도 반환 ──
+async function preprocess(file: File): Promise<{ blob: Blob; w: number; h: number }> {
   const bitmap = await createImageBitmap(file)
   const maxSide = Math.max(bitmap.width, bitmap.height)
   let scale = 1
@@ -96,14 +97,11 @@ async function preprocess(file: File): Promise<Blob> {
   else if (maxSide < 1400) scale = Math.min(2, 1400 / maxSide)
   const w = Math.round(bitmap.width * scale)
   const h = Math.round(bitmap.height * scale)
-
   const canvas = document.createElement('canvas')
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d')!
   ctx.drawImage(bitmap, 0, 0, w, h)
-
-  // 흑백 + 대비 스트레치
   const img = ctx.getImageData(0, 0, w, h)
   const d = img.data
   const CONTRAST = 1.45
@@ -114,21 +112,18 @@ async function preprocess(file: File): Promise<Blob> {
     d[i] = d[i + 1] = d[i + 2] = g
   }
   ctx.putImageData(img, 0, 0)
-
-  return await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('이미지 변환 실패'))), 'image/png')
-  })
+  const blob = await new Promise<Blob>((res, rej) =>
+    canvas.toBlob((b) => (b ? res(b) : rej(new Error('이미지 변환 실패'))), 'image/png'),
+  )
+  return { blob, w, h }
 }
 
-export interface OcrResult {
-  text: string
-  durationMs: number
-  engine: 'ocrspace' | 'clova' | 'tesseract'
-  note?: string // 폴백 등 부가 안내(개발용)
-}
-
-/** 컬러 JPEG로 인코딩해 data URL 반환. OCR.space 무료는 1MB 제한이라 용량을 맞춘다. */
-async function toJpegDataUrl(file: File, maxSide: number, maxBytes: number): Promise<string> {
+// ── 컬러 JPEG data URL + 치수 (OCR.space용, 1MB 한도 대응) ──
+async function toJpegDataUrl(
+  file: File,
+  maxSide: number,
+  maxBytes: number,
+): Promise<{ dataUrl: string; w: number; h: number }> {
   const bitmap = await createImageBitmap(file)
   const scale = Math.max(bitmap.width, bitmap.height) > maxSide
     ? maxSide / Math.max(bitmap.width, bitmap.height)
@@ -139,33 +134,32 @@ async function toJpegDataUrl(file: File, maxSide: number, maxBytes: number): Pro
   canvas.width = w
   canvas.height = h
   canvas.getContext('2d')!.drawImage(bitmap, 0, 0, w, h)
-  // 용량이 한도를 넘으면 품질을 낮춰가며 재인코딩
   for (const q of [0.85, 0.7, 0.55, 0.4]) {
     const blob = await new Promise<Blob>((res, rej) =>
       canvas.toBlob((b) => (b ? res(b) : rej(new Error('이미지 변환 실패'))), 'image/jpeg', q),
     )
     if (blob.size <= maxBytes || q === 0.4) {
-      return await new Promise<string>((res, rej) => {
+      const dataUrl = await new Promise<string>((res, rej) => {
         const fr = new FileReader()
         fr.onload = () => res(String(fr.result))
         fr.onerror = () => rej(new Error('이미지 읽기 실패'))
         fr.readAsDataURL(blob)
       })
+      return { dataUrl, w, h }
     }
   }
   throw new Error('이미지 인코딩 실패')
 }
 
-/** OCR.space 무료 API (한국어, 카드 불필요). 브라우저에서 직접 호출. */
-async function recognizeWithOcrSpace(file: File, timeoutMs: number): Promise<string> {
-  const dataUrl = await toJpegDataUrl(file, 1600, 1_000_000) // 1MB 한도 대응
+// ── OCR.space ──
+async function recognizeWithOcrSpace(file: File, timeoutMs: number): Promise<{ text: string; words: WordBox[] }> {
+  const { dataUrl, w, h } = await toJpegDataUrl(file, 1600, 1_000_000)
   const form = new FormData()
   form.append('apikey', getOcrSpaceKey())
   form.append('language', 'kor')
-  form.append('OCREngine', '1') // 한국어는 Engine 1
+  form.append('OCREngine', '1')
   form.append('scale', 'true')
-  form.append('detectOrientation', 'true')
-  form.append('isOverlayRequired', 'false')
+  form.append('isOverlayRequired', 'true') // 좌표 받기
   form.append('base64Image', dataUrl)
 
   const resp = await withTimeout(
@@ -180,96 +174,65 @@ async function recognizeWithOcrSpace(file: File, timeoutMs: number): Promise<str
   if (json.IsErroredOnProcessing) {
     throw new Error(`OCR.space 오류: ${[].concat(json.ErrorMessage || '알 수 없음').join(' ')}`)
   }
+  const pr = (json.ParsedResults || [])[0]
   const text = (json.ParsedResults || []).map((r: any) => r.ParsedText).filter(Boolean).join(' ')
-  return text
-}
-
-/** CLOVA는 컬러 원본이 정확도가 높다. 너무 큰 사진만 줄이고 JPEG로 인코딩해 base64로. */
-async function toClovaPayload(file: File): Promise<{ data: string; format: string }> {
-  const bitmap = await createImageBitmap(file)
-  const maxSide = Math.max(bitmap.width, bitmap.height)
-  const scale = maxSide > 2400 ? 2400 / maxSide : 1
-  const w = Math.round(bitmap.width * scale)
-  const h = Math.round(bitmap.height * scale)
-  const canvas = document.createElement('canvas')
-  canvas.width = w
-  canvas.height = h
-  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, w, h)
-  const blob = await new Promise<Blob>((res, rej) =>
-    canvas.toBlob((b) => (b ? res(b) : rej(new Error('이미지 변환 실패'))), 'image/jpeg', 0.92),
-  )
-  const dataUrl = await new Promise<string>((res, rej) => {
-    const fr = new FileReader()
-    fr.onload = () => res(String(fr.result))
-    fr.onerror = () => rej(new Error('이미지 읽기 실패'))
-    fr.readAsDataURL(blob)
-  })
-  return { data: dataUrl.split(',')[1], format: 'jpg' }
-}
-
-/** CLOVA OCR 프록시 호출. 프록시는 {text} 를 돌려준다고 약속. */
-async function recognizeWithClova(file: File, timeoutMs: number): Promise<string> {
-  const { data, format } = await toClovaPayload(file)
-  const resp = await withTimeout(
-    fetch(OCR_PROXY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: data, format }),
-    }),
-    timeoutMs,
-  )
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => '')
-    throw new Error(`CLOVA 프록시 오류 status:${resp.status} ${body.slice(0, 200)}`)
+  const words: WordBox[] = []
+  for (const line of pr?.TextOverlay?.Lines || []) {
+    for (const wd of line.Words || []) {
+      words.push({
+        text: wd.WordText ?? '',
+        cx: (wd.Left + wd.Width / 2) / w,
+        cy: (wd.Top + wd.Height / 2) / h,
+        w: wd.Width / w,
+        h: wd.Height / h,
+      })
+    }
   }
-  const json = await resp.json()
-  if (typeof json.text !== 'string') throw new Error('CLOVA 프록시 응답 형식 오류 (text 없음)')
-  return json.text
+  return { text, words }
 }
 
-/** Tesseract 인식. */
-async function recognizeWithTesseract(file: File, timeoutMs: number): Promise<string> {
+// ── Tesseract ──
+async function recognizeWithTesseract(file: File, timeoutMs: number): Promise<{ text: string; words: WordBox[] }> {
   const worker = await withTimeout(initWorker(), timeoutMs)
-  const image = await preprocess(file)
-  const { data } = await withTimeout(worker.recognize(image), timeoutMs)
-  return data.text ?? ''
+  const { blob, w, h } = await preprocess(file)
+  const ret: any = await withTimeout(worker.recognize(blob, {}, { text: true, blocks: true }), timeoutMs)
+  const data = ret.data
+  const words: WordBox[] = []
+  for (const b of data.blocks || []) {
+    for (const p of b.paragraphs || []) {
+      for (const l of p.lines || []) {
+        for (const wd of l.words || []) {
+          const bb = wd.bbox
+          if (!bb) continue
+          words.push({
+            text: wd.text ?? '',
+            cx: (bb.x0 + bb.x1) / 2 / w,
+            cy: (bb.y0 + bb.y1) / 2 / h,
+            w: (bb.x1 - bb.x0) / w,
+            h: (bb.y1 - bb.y0) / h,
+          })
+        }
+      }
+    }
+  }
+  return { text: data.text ?? '', words }
 }
 
-/**
- * 사진에서 텍스트를 인식한다.
- *  - 프록시(CLOVA)가 설정돼 있으면 우선 시도 → 실패 시 (옵션) Tesseract 폴백.
- *  - 설정이 없으면 바로 Tesseract.
- * 반드시 try/catch로 감싸 호출하고, 타임아웃으로 무한 대기를 막는다.
- */
 export async function recognizeText(file: File, timeoutMs = 20000): Promise<OcrResult> {
   const start = performance.now()
   const elapsed = () => Math.round(performance.now() - start)
 
-  // 우선순위: OCR.space → CLOVA(프록시) → Tesseract
-  const primary: { engine: 'ocrspace' | 'clova'; run: () => Promise<string> } | null =
-    getOcrSpaceKey()
-      ? { engine: 'ocrspace', run: () => recognizeWithOcrSpace(file, timeoutMs) }
-      : OCR_PROXY_URL
-        ? { engine: 'clova', run: () => recognizeWithClova(file, timeoutMs) }
-        : null
-
-  if (primary) {
+  if (getOcrSpaceKey()) {
     try {
-      const text = await primary.run()
-      return { text, durationMs: elapsed(), engine: primary.engine }
+      const r = await recognizeWithOcrSpace(file, timeoutMs)
+      return { ...r, durationMs: elapsed(), engine: 'ocrspace' }
     } catch (err: any) {
       if (!OCR_FALLBACK_TO_TESSERACT) throw err
-      // 클라우드 OCR 실패 → 게임이 멈추지 않도록 Tesseract로 폴백
-      const text = await recognizeWithTesseract(file, timeoutMs)
-      return {
-        text,
-        durationMs: elapsed(),
-        engine: 'tesseract',
-        note: `${primary.engine} 실패로 폴백: ${err?.message ?? err}`,
-      }
+      const r = await recognizeWithTesseract(file, timeoutMs)
+      return { ...r, durationMs: elapsed(), engine: 'tesseract', note: `ocrspace 실패로 폴백: ${err?.message ?? err}` }
     }
   }
 
-  const text = await recognizeWithTesseract(file, timeoutMs)
-  return { text, durationMs: elapsed(), engine: 'tesseract' }
+  const r = await recognizeWithTesseract(file, timeoutMs)
+  return { ...r, durationMs: elapsed(), engine: 'tesseract' }
 }

@@ -400,7 +400,187 @@ body {
   color: #4f46e5;
 }
 
-/* 하단 도크 */
+/* 크레딧 칩 */
+.credit-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 15px;
+  font-weight: 800;
+  padding: 7px 13px;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  color: #fcd34d;
+}
+.credit-pill .coin {
+  font-size: 15px;
+}
+.credit-sub {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+/* 카메라 카드 */
+.cam-card {
+  padding: 14px;
+}
+.cam-view {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #000;
+  aspect-ratio: 3 / 4;
+}
+.cam-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.cam-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+.cam-icon {
+  font-size: 40px;
+}
+.cam-placeholder p {
+  margin: 0;
+  font-size: 14px;
+}
+.cam-placeholder .btn-primary {
+  width: auto;
+  padding: 12px 22px;
+}
+.cam-err {
+  color: var(--warn);
+  font-size: 12px !important;
+}
+.frozen {
+  position: absolute;
+  inset: 0;
+}
+.frozen img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* 찾은 위치 빨간 동그라미 */
+.find-circle {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  aspect-ratio: 1;
+  border: 4px solid #ff3b3b;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(255, 59, 59, 0.3), 0 0 22px rgba(255, 59, 59, 0.7);
+  animation: ring 0.5s cubic-bezier(0.2, 1.5, 0.4, 1);
+  pointer-events: none;
+}
+@keyframes ring {
+  0% {
+    transform: translate(-50%, -50%) scale(1.8);
+    opacity: 0;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+}
+
+/* 셔터 */
+.cam-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 14px;
+}
+.shutter {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 255, 255, 0.85);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.12s;
+}
+.shutter span {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--grad);
+}
+.shutter:active {
+  transform: scale(0.92);
+}
+.geo {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.result-area {
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.result-area .btn-primary {
+  width: 100%;
+}
+
+/* 사전 정의 */
+.def-box {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin: 4px 0 18px;
+  text-align: left;
+  backdrop-filter: blur(8px);
+}
+.def-label {
+  font-size: 13px;
+  font-weight: 800;
+  color: #fff;
+}
+.def-text {
+  margin: 6px 0 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+/* 푸터 */
+.footnote {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}
+.anti {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .dock {
   margin-top: auto;
   display: flex;
