@@ -397,6 +397,12 @@ body {
   letter-spacing: 0.04em;
   color: #fff;
 }
+.win-cat {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+}
 .win-sub {
   margin: 0 0 18px;
   color: rgba(255, 255, 255, 0.85);

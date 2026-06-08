@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { initWorker, recognizeText, getOcrSpaceKey, setOcrSpaceKey, type WordBox } from './ocr'
-import { pickRandomWord, toSyllables, hintImageUrl, type WordEntry } from './words'
+import { pickRandomWord, toSyllables, fetchWordInfo, type WordEntry, type WordInfo } from './words'
 
 const OCR_TIMEOUT_MS = 20000
 const CREDITS_PER_WORD = 10
@@ -115,6 +115,8 @@ export default function App() {
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
   const [kakaoKey, setKakaoKeyState] = useState<string>(() => getKakaoKey())
   const [winImgFailed, setWinImgFailed] = useState(false)
+  const [wiki, setWiki] = useState<WordInfo | null>(null)
+  const [wikiLoading, setWikiLoading] = useState(false)
 
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -126,6 +128,26 @@ export default function App() {
     initWorker().catch(() => {})
     requestLocation()
   }, [])
+
+  // 미션 성공 시 위키백과에서 사진 + 사전적 설명 가져오기
+  useEffect(() => {
+    if (!allDone) {
+      setWiki(null)
+      return
+    }
+    let alive = true
+    setWikiLoading(true)
+    setWinImgFailed(false)
+    fetchWordInfo(word).then((info) => {
+      if (alive) {
+        setWiki(info)
+        setWikiLoading(false)
+      }
+    })
+    return () => {
+      alive = false
+    }
+  }, [allDone, word])
 
   function requestLocation() {
     if (!navigator.geolocation) {
@@ -255,7 +277,7 @@ export default function App() {
         <>
           <section className="card mission">
             <div className="mission-top">
-              <span className="eyebrow">이번 미션</span>
+              <span className="eyebrow">{entry.emoji} {entry.category}</span>
               <span className="count-pill">
                 {doneCount}/{syllables.length}
               </span>
@@ -370,14 +392,23 @@ export default function App() {
         <section className="card win">
           <div className="win-emoji">🏆</div>
           <p className="win-word">{word}</p>
-          {!winImgFailed && (
+          <p className="win-cat">{entry.emoji} {entry.category}</p>
+          {wiki?.thumb && !winImgFailed && (
             <figure className="win-photo">
-              <img src={hintImageUrl(entry)} alt={word} onError={() => setWinImgFailed(true)} />
+              <img src={wiki.thumb} alt={word} onError={() => setWinImgFailed(true)} />
             </figure>
           )}
           <div className="def-box">
             <span className="def-label">📖 {word}</span>
-            <p className="def-text">{entry.def}</p>
+            <p className="def-text">
+              {wikiLoading
+                ? '사전에서 뜻을 불러오는 중…'
+                : wiki?.extract
+                  ? wiki.extract.length > 160
+                    ? wiki.extract.slice(0, 160) + '…'
+                    : wiki.extract
+                  : '이 단어의 설명을 찾지 못했어요. 일상에서 자주 보이는 단어예요!'}
+            </p>
           </div>
           <p className="win-credit">+{CREDITS_PER_WORD} 크레딧 적립!</p>
           <button className="btn-primary" onClick={newGame}>
