@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { initWorker, recognizeText, getOcrSpaceKey, setOcrSpaceKey } from './ocr'
-import { pickRandomWord, toSyllables } from './words'
+import { pickRandomWord, toSyllables, hintImageUrl, hintImageFallback } from './words'
 
 const OCR_TIMEOUT_MS = 20000
 
@@ -15,48 +15,40 @@ type Phase = 'idle' | 'loading' | 'error'
 interface CaptureResult {
   text: string
   durationMs: number
-  found: string[] // 이번 촬영에서 새로 모은 음절
-  engine: string // 'clova' | 'tesseract'
+  hit: boolean
+  target: string
+  engine: string
   note?: string
 }
 
 export default function App() {
-  // 미션 단어 — 새로고침/새 게임마다 랜덤
-  const [word, setWord] = useState<string>(() => pickRandomWord())
+  const [entry, setEntry] = useState(() => pickRandomWord())
+  const word = entry.ko
   const syllables = useMemo(() => toSyllables(word), [word])
-
-  // 모은 음절(인덱스 기준). 같은 음절이 두 칸이면 각각 따로 채움.
   const [collected, setCollected] = useState<boolean[]>(() => syllables.map(() => false))
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [last, setLast] = useState<CaptureResult | null>(null)
-  const [errorMsg, setErrorMsg] = useState<string>('')
-  const [errorDetail, setErrorDetail] = useState<string>('') // 개발용 상세
-  const [preview, setPreview] = useState<string>('')
-  const [engineStatus, setEngineStatus] = useState<string>('OCR 엔진 준비 중…')
+  const [errorMsg, setErrorMsg] = useState('')
+  const [errorDetail, setErrorDetail] = useState('')
+  const [preview, setPreview] = useState('')
+  const [engineStatus, setEngineStatus] = useState('OCR 엔진 준비 중…')
   const [engineReady, setEngineReady] = useState(false)
-
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
+  const [showHint, setShowHint] = useState(true)
 
   const fileRef = useRef<HTMLInputElement>(null)
 
-  function editOcrKey() {
-    const input = window.prompt(
-      'OCR.space 무료 API 키를 붙여넣으세요.\n\n• 이 기기에만 저장됩니다 (서버·깃허브·외부에 전송되지 않음).\n• 키 발급(무료, 카드 불필요): ocr.space/ocrapi/freekey\n• 비우고 확인하면 기본(Tesseract)으로 돌아갑니다.',
-      getOcrSpaceKey(),
-    )
-    if (input === null) return // 취소
-    setOcrSpaceKey(input)
-    setOcrKeySet(!!input.trim())
-  }
+  const currentIndex = collected.findIndex((c) => !c)
+  const allDone = currentIndex === -1
+  const target = allDone ? null : syllables[currentIndex]
+  const doneCount = collected.filter(Boolean).length
 
-  // 앱 시작 시 OCR 워커를 미리 로드 (첫 인식 지연 방지)
   useEffect(() => {
     let alive = true
     initWorker((status, progress) => {
       if (!alive) return
-      const pct = Math.round(progress * 100)
-      setEngineStatus(`OCR 엔진 준비 중… ${status} ${pct}%`)
+      setEngineStatus(`OCR 엔진 준비 중… ${status} ${Math.round(progress * 100)}%`)
     })
       .then(() => alive && (setEngineReady(true), setEngineStatus('준비 완료')))
       .catch((e) => {
@@ -69,59 +61,65 @@ export default function App() {
     }
   }, [])
 
-  const allDone = collected.every(Boolean)
-
   function newGame() {
     const next = pickRandomWord(word)
-    setWord(next)
-    setCollected(toSyllables(next).map(() => false))
+    setEntry(next)
+    setCollected(toSyllables(next.ko).map(() => false))
     setPhase('idle')
     setLast(null)
     setErrorMsg('')
     setErrorDetail('')
     setPreview('')
+    setShowHint(true)
   }
 
   function openCamera() {
     fileRef.current?.click()
   }
 
+  function editOcrKey() {
+    const input = window.prompt(
+      'OCR.space 무료 API 키를 붙여넣으세요.\n\n• 이 기기에만 저장됩니다 (서버·깃허브·외부 전송 없음).\n• 키 발급(무료, 카드 불필요): ocr.space/ocrapi/freekey\n• 비우고 확인하면 기본(Tesseract)으로 돌아갑니다.',
+      getOcrSpaceKey(),
+    )
+    if (input === null) return
+    setOcrSpaceKey(input)
+    setOcrKeySet(!!input.trim())
+  }
+
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
-    e.target.value = '' // 같은 파일 다시 선택 가능하게
-    if (!file) return
+    e.target.value = ''
+    if (!file || !target) return
 
+    setShowHint(false)
     setPreview(URL.createObjectURL(file))
     setPhase('loading')
     setErrorMsg('')
     setErrorDetail('')
 
+    const seeking = target
     try {
       const result = await recognizeText(file, OCR_TIMEOUT_MS)
-
-      // 인식 텍스트에서 아직 못 모은 음절을 찾아 채운다.
-      const newFound: string[] = []
-      setCollected((prev) => {
-        const next = [...prev]
-        syllables.forEach((s, i) => {
-          if (!next[i] && result.text.includes(s)) {
-            next[i] = true
-            newFound.push(s)
-          }
+      const hit = result.text.includes(seeking)
+      if (hit) {
+        setCollected((prev) => {
+          const n = [...prev]
+          const idx = n.findIndex((c) => !c) // 현재 찾는 글자
+          if (idx >= 0) n[idx] = true
+          return n
         })
-        return next
-      })
-
+      }
       setLast({
         text: result.text,
         durationMs: result.durationMs,
-        found: newFound,
+        hit,
+        target: seeking,
         engine: result.engine,
         note: result.note,
       })
       setPhase('idle')
     } catch (err: any) {
-      // 무한 로딩 방지: 어떤 실패든 여기서 로딩을 즉시 끝낸다.
       setPhase('error')
       setErrorMsg('글자를 인식하지 못했어요. 다시 찍어주세요.')
       setErrorDetail(formatError(err))
@@ -131,100 +129,147 @@ export default function App() {
 
   return (
     <div className="app">
+      <div className="aurora" aria-hidden />
+
       <header className="topbar">
-        <div className="brand">🪧 간판 글자 수집</div>
-        <button className="ghost" onClick={newGame}>새 단어 ↺</button>
+        <div className="brand">
+          <span className="brand-badge">간판</span>
+          글자 수집
+        </div>
+        <button className="ghost" onClick={newGame}>
+          새 단어
+        </button>
       </header>
 
-      <section className="mission">
-        <p className="mission-label">이번 미션 단어</p>
-        <p className="mission-word">{word}</p>
-        <div className="slots">
+      {/* 진행 바 */}
+      <div className="progressbar">
+        <div className="progressbar-fill" style={{ width: `${(doneCount / syllables.length) * 100}%` }} />
+      </div>
+
+      {/* 미션 카드 */}
+      <section className="card mission">
+        <div className="mission-top">
+          <span className="eyebrow">이번 미션</span>
+          <span className="count-pill">
+            {doneCount}/{syllables.length}
+          </span>
+        </div>
+
+        <div className="word-line">
           {syllables.map((s, i) => (
-            <div key={i} className={`slot ${collected[i] ? 'filled' : 'pending'}`}>
+            <span
+              key={i}
+              className={`syl ${collected[i] ? 'got' : i === currentIndex ? 'now' : 'todo'}`}
+            >
               {s}
-            </div>
+            </span>
           ))}
         </div>
-        <p className="progress">
-          {collected.filter(Boolean).length} / {syllables.length} 음절 수집 · 간판에서 이 글자들을 찾아 찍어보세요
-        </p>
+
+        {/* 참고 사진 (1회성 힌트) */}
+        {showHint && !allDone && (
+          <figure className="hint">
+            <img
+              src={hintImageUrl(entry.en)}
+              alt={`${word} 예시`}
+              loading="eager"
+              onError={(ev) => {
+                const img = ev.currentTarget
+                if (!img.dataset.fb) {
+                  img.dataset.fb = '1'
+                  img.src = hintImageFallback(entry.en)
+                }
+              }}
+            />
+            <figcaption>‘{word}’ 는 이런 느낌 · 참고용</figcaption>
+            <button className="hint-close" onClick={() => setShowHint(false)} aria-label="힌트 닫기">
+              ✕
+            </button>
+          </figure>
+        )}
+
+        {!allDone && (
+          <div className="seek">
+            <span className="seek-label">지금 찾을 글자</span>
+            <span className="seek-target">{target}</span>
+            <span className="seek-help">간판에서 ‘{target}’ 한 글자만 찾아 찍어요</span>
+          </div>
+        )}
       </section>
 
-      {preview && (
-        <div className="preview">
-          <img src={preview} alt="찍은 사진" />
-        </div>
-      )}
+      {/* 촬영 결과 영역 */}
+      {preview && !allDone && (
+        <section className="card shot">
+          <div className="shot-img">
+            <img src={preview} alt="찍은 사진" />
+            {phase === 'loading' && (
+              <div className="shot-loading">
+                <span className="spinner" />
+                <span>‘{target}’ 찾는 중…</span>
+              </div>
+            )}
+          </div>
 
-      {/* 상태별 안내 */}
-      {phase === 'loading' && (
-        <div className="status loading">
-          <div className="spinner" />
-          <p>간판 글자를 읽는 중… (최대 {OCR_TIMEOUT_MS / 1000}초)</p>
-        </div>
-      )}
-
-      {phase === 'error' && (
-        <div className="status error">
-          <p className="err-title">⚠️ {errorMsg}</p>
-          <button className="primary" onClick={openCamera}>다시 찍기</button>
-          {errorDetail && (
-            <details className="dev">
-              <summary>개발용 에러 보기</summary>
-              <pre>{errorDetail}</pre>
-            </details>
+          {phase === 'error' && (
+            <div className="result err">
+              <p>⚠️ {errorMsg}</p>
+              <button className="btn-mini" onClick={openCamera}>
+                다시 찍기
+              </button>
+              {errorDetail && (
+                <details className="dev">
+                  <summary>개발용 에러 보기</summary>
+                  <pre>{errorDetail}</pre>
+                </details>
+              )}
+            </div>
           )}
-        </div>
-      )}
 
-      {phase === 'idle' && last && (
-        <div className="status result">
-          {last.found.length > 0 ? (
-            <p className="ok">✅ 새로 모은 글자: {last.found.map((s) => `[${s}]`).join(' ')}</p>
-          ) : (
-            <p className="miss">이 사진엔 필요한 글자가 없네요. 다른 간판을 찍어보세요!</p>
+          {phase === 'idle' && last && (
+            <div className={`result ${last.hit ? 'ok' : 'miss'}`}>
+              <p>
+                {last.hit ? `‘${last.target}’ 찾았다! 🎉` : `이 사진엔 ‘${last.target}’ 가 안 보여요. 다시 도전!`}
+              </p>
+              <details className="dev">
+                <summary>
+                  인식 텍스트 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
+                </summary>
+                {last.note && <pre>⚠ {last.note}</pre>}
+                <pre>{last.text || '(빈 결과)'}</pre>
+              </details>
+            </div>
           )}
-          <details className="dev">
-            <summary>
-              인식된 텍스트 보기 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
-            </summary>
-            {last.note && <pre>⚠ {last.note}</pre>}
-            <pre>{last.text || '(빈 결과)'}</pre>
-          </details>
-        </div>
+        </section>
       )}
 
+      {/* 승리 */}
       {allDone && (
-        <div className="win">
-          🎉 <strong>{word}</strong> 완성! 모든 글자를 모았어요.
-          <button className="primary" onClick={newGame}>다음 단어 도전</button>
-        </div>
+        <section className="card win">
+          <div className="win-emoji">🏆</div>
+          <p className="win-word">{word}</p>
+          <p className="win-sub">모든 글자를 모았어요!</p>
+          <button className="btn-primary" onClick={newGame}>
+            다음 단어 도전 →
+          </button>
+        </section>
       )}
 
-      {/* 하단 촬영 버튼 */}
+      {/* 하단 액션 */}
       {!allDone && (
-        <div className="actions">
-          <button className="primary big" onClick={openCamera} disabled={phase === 'loading'}>
-            📷 사진 찍기
+        <div className="dock">
+          <button className="btn-primary big" onClick={openCamera} disabled={phase === 'loading'}>
+            <span className="cam">📷</span> ‘{target}’ 찾으러 사진 찍기
           </button>
-          <p className="engine-status">{engineReady ? '' : engineStatus}</p>
-          <button className="ocr-key-btn" onClick={editOcrKey}>
-            {ocrKeySet
-              ? '🎯 정확 모드 켜짐 (OCR.space) · 키 변경/해제'
-              : '🎯 정확도 높이기 — 무료 OCR 키 입력'}
-          </button>
+          <div className="dock-meta">
+            {!engineReady && <span className="muted">{engineStatus}</span>}
+            <button className="link-btn" onClick={editOcrKey}>
+              {ocrKeySet ? '🎯 정확 모드 (OCR.space) · 변경' : '🎯 정확도 높이기 — 무료 OCR 키'}
+            </button>
+          </div>
         </div>
       )}
 
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        onChange={onFile}
-        hidden
-      />
+      <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onFile} hidden />
     </div>
   )
 }
