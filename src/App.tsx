@@ -10,6 +10,8 @@ interface CaptureResult {
   text: string
   durationMs: number
   found: string[] // 이번 촬영에서 새로 모은 음절
+  engine: string // 'clova' | 'tesseract'
+  note?: string
 }
 
 export default function App() {
@@ -92,7 +94,13 @@ export default function App() {
         return next
       })
 
-      setLast({ text: result.text, durationMs: result.durationMs, found: newFound })
+      setLast({
+        text: result.text,
+        durationMs: result.durationMs,
+        found: newFound,
+        engine: result.engine,
+        note: result.note,
+      })
       setPhase('idle')
     } catch (err: any) {
       // 무한 로딩 방지: 어떤 실패든 여기서 로딩을 즉시 끝낸다.
@@ -160,7 +168,10 @@ export default function App() {
             <p className="miss">이 사진엔 필요한 글자가 없네요. 다른 간판을 찍어보세요!</p>
           )}
           <details className="dev">
-            <summary>인식된 텍스트 보기 (개발용 · {last.durationMs}ms)</summary>
+            <summary>
+              인식된 텍스트 보기 (개발용 · {last.engine === 'clova' ? 'CLOVA' : 'Tesseract'} · {last.durationMs}ms)
+            </summary>
+            {last.note && <pre>⚠ {last.note}</pre>}
             <pre>{last.text || '(빈 결과)'}</pre>
           </details>
         </div>

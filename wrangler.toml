@@ -1,0 +1,14 @@
+# Cloudflare Worker 설정 (CLOVA OCR 프록시)
+name = "clova-ocr-proxy"
+main = "worker/clova-proxy.js"
+compatibility_date = "2024-11-01"
+
+[vars]
+# CORS 허용 출처 — 배포된 게임 주소로 한정(보안). 필요하면 "*"로 풀 수 있음.
+ALLOW_ORIGIN = "https://yonggary227.github.io"
+# CLOVA OCR 도메인의 APIGW Invoke URL을 여기에 붙여넣기.
+# (General OCR이면 보통 .../general 로 끝납니다.)
+CLOVA_INVOKE_URL = "여기에_INVOKE_URL_붙여넣기"
+
+# CLOVA_SECRET 는 여기에 적지 말고 아래 명령으로 안전하게 등록:
+#   npx wrangler secret put CLOVA_SECRET
