@@ -1,25 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { initWorker, recognizeText, getOcrSpaceKey, setOcrSpaceKey, type WordBox } from './ocr'
-import { pickRandomWord, toSyllables, type WordEntry } from './words'
+import { pickRandomWord, toSyllables, hintImageUrl, type WordEntry } from './words'
 
 const OCR_TIMEOUT_MS = 20000
 const CREDITS_PER_WORD = 10
-
-const ENGINE_LABEL: Record<string, string> = {
-  ocrspace: 'OCR.space',
-  tesseract: 'Tesseract',
-}
 
 type Phase = 'idle' | 'loading' | 'error'
 type Geo = { lat: number; lng: number; acc: number } | { error: string } | null
 
 interface CaptureResult {
-  text: string
-  durationMs: number
   hit: boolean
   target: string
-  engine: string
-  note?: string
+  errorDetail?: string
   circle: { cx: number; cy: number; d: number } | null
 }
 
@@ -46,9 +38,63 @@ function logMission(record: object) {
     /* noop */
   }
 }
-/** 깔끔한 정적 지도 (키 불필요) + 빨간 핀 */
-function mapImg(lat: number, lng: number): string {
+const getKakaoKey = () => {
+  try {
+    return localStorage.getItem('kakao_js_key') || ''
+  } catch {
+    return ''
+  }
+}
+const setKakaoKey = (k: string) => {
+  try {
+    k.trim() ? localStorage.setItem('kakao_js_key', k.trim()) : localStorage.removeItem('kakao_js_key')
+  } catch {
+    /* noop */
+  }
+}
+function staticMapImg(lat: number, lng: number): string {
   return `https://static-maps.yandex.ru/1.x/?ll=${lng},${lat}&z=16&size=600,300&l=map&lang=en_US&pt=${lng},${lat},pm2rdm`
+}
+
+// ── 카카오맵 ──
+let kakaoLoad: Promise<any> | null = null
+function loadKakao(key: string): Promise<any> {
+  const w = window as any
+  if (w.kakao && w.kakao.maps) return Promise.resolve(w.kakao)
+  if (!kakaoLoad) {
+    kakaoLoad = new Promise((res, rej) => {
+      const s = document.createElement('script')
+      s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${key}&autoload=false`
+      s.onload = () => w.kakao.maps.load(() => res(w.kakao))
+      s.onerror = () => {
+        kakaoLoad = null
+        rej(new Error('카카오맵 SDK 로드 실패'))
+      }
+      document.head.appendChild(s)
+    })
+  }
+  return kakaoLoad
+}
+
+function KakaoMap({ lat, lng, apiKey }: { lat: number; lng: number; apiKey: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    loadKakao(apiKey)
+      .then((kakao) => {
+        if (cancelled || !ref.current) return
+        const center = new kakao.maps.LatLng(lat, lng)
+        const map = new kakao.maps.Map(ref.current, { center, level: 3 })
+        new kakao.maps.Marker({ position: center, map })
+      })
+      .catch(() => setErr('카카오맵 로드 실패 — 키/도메인 등록을 확인하세요'))
+    return () => {
+      cancelled = true
+    }
+  }, [lat, lng, apiKey])
+  if (err) return <div className="map-empty"><p>{err}</p></div>
+  return <div ref={ref} className="map-frame" />
 }
 
 export default function App() {
@@ -61,13 +107,14 @@ export default function App() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [last, setLast] = useState<CaptureResult | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
-  const [errorDetail, setErrorDetail] = useState('')
   const [preview, setPreview] = useState('')
   const [geo, setGeo] = useState<Geo>(null)
 
   const [credits, setCredits] = useState<number>(() => num('credits', 0))
   const [completed, setCompleted] = useState<number>(() => num('completed', 0))
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
+  const [kakaoKey, setKakaoKeyState] = useState<string>(() => getKakaoKey())
+  const [winImgFailed, setWinImgFailed] = useState(false)
 
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -107,6 +154,7 @@ export default function App() {
       setNum('credits', nc)
       setCompleted(ncomp)
       setNum('completed', ncomp)
+      setWinImgFailed(false)
     }
   }
 
@@ -118,7 +166,6 @@ export default function App() {
     setPreview(URL.createObjectURL(file))
     setPhase('loading')
     setErrorMsg('')
-    setErrorDetail('')
     requestLocation()
 
     const seeking = target
@@ -131,21 +178,12 @@ export default function App() {
         ? { cx: box.cx, cy: box.cy, d: Math.min(0.5, Math.max(box.w, box.h) * 1.6 + 0.04) }
         : null
       if (hit && !collected[seekIdx]) applyFind(seekIdx)
-      setLast({
-        text: result.text,
-        durationMs: result.durationMs,
-        hit,
-        target: seeking,
-        engine: result.engine,
-        note: result.note,
-        circle,
-      })
+      setLast({ hit, target: seeking, circle })
       setPhase('idle')
     } catch (err: any) {
       setPhase('error')
       setErrorMsg('글자를 인식하지 못했어요. 다시 찍어주세요.')
-      setErrorDetail(formatError(err))
-      setLast(null)
+      setLast({ hit: false, target: seeking, circle: null, errorDetail: formatError(err) })
     }
   }
 
@@ -167,19 +205,29 @@ export default function App() {
     setEntry(next)
     setCollected(toSyllables(next.ko).map(() => false))
     setSelected(0)
+    setWinImgFailed(false)
     clearShot()
     setErrorMsg('')
-    setErrorDetail('')
   }
 
   function editOcrKey() {
     const input = window.prompt(
-      'OCR.space 무료 API 키를 붙여넣으세요.\n\n• 이 기기에만 저장됩니다 (서버·깃허브·외부 전송 없음).\n• 키 발급(무료, 카드 불필요): ocr.space/ocrapi/freekey\n• 비우고 확인하면 기본(Tesseract)으로 돌아갑니다.',
+      'OCR.space 무료 API 키를 붙여넣으세요.\n\n• 이 기기에만 저장됩니다.\n• 키 발급(무료, 카드 불필요): ocr.space/ocrapi/freekey\n• 비우고 확인하면 기본(Tesseract)으로.',
       getOcrSpaceKey(),
     )
     if (input === null) return
     setOcrSpaceKey(input)
     setOcrKeySet(!!input.trim())
+  }
+
+  function editKakaoKey() {
+    const input = window.prompt(
+      '카카오맵 JavaScript 키를 붙여넣으세요.\n\n1) developers.kakao.com → 내 애플리케이션 → 앱 키 → JavaScript 키\n2) 플랫폼 → Web → 사이트 도메인에 https://yonggary227.github.io 등록\n\n• 이 기기에만 저장됩니다. 비우면 기본 지도로.',
+      getKakaoKey(),
+    )
+    if (input === null) return
+    setKakaoKey(input)
+    setKakaoKeyState(input.trim())
   }
 
   const geoOk = geo != null && 'lat' in geo
@@ -205,7 +253,6 @@ export default function App() {
 
       {!allDone && (
         <>
-          {/* 미션 — 음절 탭 선택 */}
           <section className="card mission">
             <div className="mission-top">
               <span className="eyebrow">이번 미션</span>
@@ -244,48 +291,33 @@ export default function App() {
             ) : (
               <>
                 <div className="shot-wrap">
-                  <img className="shot-photo" src={preview} alt="촬영 사진" />
-                  {phase === 'loading' && (
-                    <div className="shot-loading">
-                      <span className="spinner" />
-                      <span>‘{last?.target ?? target}’ 찾는 중…</span>
-                    </div>
-                  )}
-                  {phase === 'idle' && last?.hit && last.circle && (
-                    <span
-                      className="find-circle"
-                      style={{
-                        left: `${last.circle.cx * 100}%`,
-                        top: `${last.circle.cy * 100}%`,
-                        width: `${last.circle.d * 100}%`,
-                      }}
-                    />
-                  )}
+                  <div className="shot-inner">
+                    <img className="shot-photo" src={preview} alt="촬영 사진" />
+                    {phase === 'loading' && (
+                      <div className="shot-loading">
+                        <span className="spinner" />
+                        <span>‘{last?.target ?? target}’ 찾는 중…</span>
+                      </div>
+                    )}
+                    {phase === 'idle' && last?.hit && last.circle && (
+                      <span
+                        className="find-circle"
+                        style={{
+                          left: `${last.circle.cx * 100}%`,
+                          top: `${last.circle.cy * 100}%`,
+                          width: `${last.circle.d * 100}%`,
+                        }}
+                      />
+                    )}
+                  </div>
                 </div>
 
                 {phase !== 'loading' && (
                   <div className="result-area">
-                    {phase === 'error' && (
-                      <div className="result err">
-                        <p>⚠️ {errorMsg}</p>
-                        {errorDetail && (
-                          <details className="dev">
-                            <summary>개발용 에러 보기</summary>
-                            <pre>{errorDetail}</pre>
-                          </details>
-                        )}
-                      </div>
-                    )}
+                    {phase === 'error' && <div className="result err"><p>⚠️ {errorMsg}</p></div>}
                     {phase === 'idle' && last && (
                       <div className={`result ${last.hit ? 'ok' : 'miss'}`}>
                         <p>{last.hit ? `‘${last.target}’ 찾았다! 🎉` : `이 사진엔 ‘${last.target}’ 가 안 보여요. 다시!`}</p>
-                        <details className="dev">
-                          <summary>
-                            인식 텍스트 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
-                          </summary>
-                          {last.note && <pre>⚠ {last.note}</pre>}
-                          <pre>{last.text || '(빈 결과)'}</pre>
-                        </details>
                       </div>
                     )}
                     <button className="btn-primary" onClick={() => fileRef.current?.click()}>
@@ -301,31 +333,48 @@ export default function App() {
             </button>
           </section>
 
-          {/* 내 위치 — 정적 지도 + 핀 */}
-          <section className="card map-card">
-            <div className="map-head">
-              <span>📍 내 위치</span>
-              <span className="map-acc">{geoOk ? `정확도 ±${(geo as any).acc}m` : '위치 확인 중…'}</span>
-            </div>
-            {geoOk ? (
-              <img className="map-frame" src={mapImg((geo as any).lat, (geo as any).lng)} alt="내 위치 지도" />
-            ) : (
-              <div className="map-empty">
-                <p>{geo && 'error' in geo ? `위치 미확보: ${geo.error}` : '위치 권한을 허용해 주세요'}</p>
-                <button className="btn-mini" onClick={requestLocation}>
-                  위치 다시 시도
-                </button>
+          {/* 내 위치 — 카카오맵(키 있으면) / 정적 지도(폴백). 촬영 중엔 숨겨 스크롤 최소화 */}
+          {!preview && (
+            <section className="card map-card">
+              <div className="map-head">
+                <span>📍 내 위치</span>
+                {geoOk ? (
+                  <button className="map-link" onClick={editKakaoKey}>
+                    {kakaoKey ? '카카오맵 ✓' : '카카오맵 연결'}
+                  </button>
+                ) : (
+                  <span className="map-acc">위치 확인 중…</span>
+                )}
               </div>
-            )}
-          </section>
+              {geoOk ? (
+                kakaoKey ? (
+                  <KakaoMap lat={(geo as any).lat} lng={(geo as any).lng} apiKey={kakaoKey} />
+                ) : (
+                  <img className="map-frame" src={staticMapImg((geo as any).lat, (geo as any).lng)} alt="내 위치 지도" />
+                )
+              ) : (
+                <div className="map-empty">
+                  <p>{geo && 'error' in geo ? `위치 미확보: ${geo.error}` : '위치 권한을 허용해 주세요'}</p>
+                  <button className="btn-mini" onClick={requestLocation}>
+                    위치 다시 시도
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
         </>
       )}
 
-      {/* 승리 — 뜻 + 크레딧 */}
+      {/* 승리 — 연상 사진 + 뜻 + 크레딧 */}
       {allDone && (
         <section className="card win">
           <div className="win-emoji">🏆</div>
           <p className="win-word">{word}</p>
+          {!winImgFailed && (
+            <figure className="win-photo">
+              <img src={hintImageUrl(entry)} alt={word} onError={() => setWinImgFailed(true)} />
+            </figure>
+          )}
           <div className="def-box">
             <span className="def-label">📖 {word}</span>
             <p className="def-text">{entry.def}</p>
@@ -351,10 +400,7 @@ export default function App() {
 
 function formatError(err: any): string {
   if (!err) return 'Unknown error'
-  const parts: string[] = []
-  if (err.name) parts.push(`name: ${err.name}`)
-  if (err.message) parts.push(`message: ${err.message}`)
-  if (err.status) parts.push(`status: ${err.status}`)
-  if (typeof err === 'string') parts.push(err)
-  return parts.length ? parts.join('\n') : JSON.stringify(err)
+  if (err.message) return String(err.message)
+  if (typeof err === 'string') return err
+  return JSON.stringify(err)
 }
