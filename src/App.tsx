@@ -7,8 +7,8 @@ const CREDITS_PER_WORD = 10
 
 const ENGINE_LABEL: Record<string, string> = {
   ocrspace: 'OCR.space',
-  clova: 'CLOVA',
   tesseract: 'Tesseract',
+  beta: '베타',
 }
 
 type Cam = 'off' | 'live' | 'frozen'
@@ -19,13 +19,13 @@ interface CaptureResult {
   text: string
   durationMs: number
   hit: boolean
-  target: string
+  found: string // 찾은 글자(있으면)
+  remain: string // 남은 글자 목록
   engine: string
   note?: string
   circle: { cx: number; cy: number; d: number } | null
 }
 
-// ── 로컬 저장 (크레딧/완료수/기록) ──
 const num = (k: string, d: number) => {
   try {
     return Number(localStorage.getItem(k) ?? d)
@@ -50,6 +50,12 @@ function logMission(record: object) {
   }
 }
 
+function mapEmbed(lat: number, lng: number): string {
+  const d = 0.004
+  const bbox = `${lng - d},${lat - d},${lng + d},${lat + d}`
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`
+}
+
 export default function App() {
   const [entry, setEntry] = useState<WordEntry>(() => pickRandomWord())
   const word = entry.ko
@@ -69,23 +75,20 @@ export default function App() {
   const [completed, setCompleted] = useState<number>(() => num('completed', 0))
 
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
-  const [showHint, setShowHint] = useState(true)
-  const [hintFailed, setHintFailed] = useState(false)
+  const [winImgFailed, setWinImgFailed] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
 
-  const currentIndex = collected.findIndex((c) => !c)
-  const allDone = currentIndex === -1
-  const target = allDone ? null : syllables[currentIndex]
+  const allDone = collected.every(Boolean)
   const doneCount = collected.filter(Boolean).length
+  const remainList = syllables.filter((_, i) => !collected[i])
 
-  // OCR 엔진 워밍업
   useEffect(() => {
     initWorker().catch(() => {})
+    requestLocation()
   }, [])
 
-  // 언마운트 시 카메라 정리
   useEffect(() => () => stopCamera(), [])
 
   function stopCamera() {
@@ -106,15 +109,15 @@ export default function App() {
         await videoRef.current.play()
       }
       setCam('live')
-      requestLocation() // 위치 권한 미리 확보
+      requestLocation()
     } catch (e: any) {
-      setCamError('카메라를 열 수 없어요. 브라우저에서 카메라 권한을 허용해 주세요. (' + (e?.name || e) + ')')
+      setCamError('카메라 권한을 허용해 주세요. (' + (e?.name || e) + ')')
     }
   }
 
   function requestLocation() {
     if (!navigator.geolocation) {
-      setGeo({ error: '이 기기에서 위치를 지원하지 않아요' })
+      setGeo({ error: '위치 미지원 기기' })
       return
     }
     navigator.geolocation.getCurrentPosition(
@@ -124,9 +127,28 @@ export default function App() {
     )
   }
 
+  /** 한 글자 수집 + 기록 + (완성 시) 크레딧 */
+  function applyFind(idx: number) {
+    const next = collected.map((c, i) => (i === idx ? true : c))
+    setCollected(next)
+    const g = geo
+    const at = g && 'lat' in g ? { lat: g.lat, lng: g.lng, acc: g.acc } : null
+    logMission({ word, syllable: syllables[idx], ts: new Date().toISOString(), location: at })
+    if (next.every(Boolean)) {
+      const nc = credits + CREDITS_PER_WORD
+      const ncomp = completed + 1
+      setCredits(nc)
+      setNum('credits', nc)
+      setCompleted(ncomp)
+      setNum('completed', ncomp)
+      setWinImgFailed(false)
+    }
+    return next
+  }
+
   async function capture() {
     const v = videoRef.current
-    if (!v || !target || !v.videoWidth) return
+    if (!v || allDone || !v.videoWidth) return
     const canvas = document.createElement('canvas')
     canvas.width = v.videoWidth
     canvas.height = v.videoHeight
@@ -136,46 +158,39 @@ export default function App() {
     setPhase('loading')
     setErrorMsg('')
     setErrorDetail('')
-    setShowHint(false)
-    requestLocation() // 촬영 시점 위치 갱신
+    requestLocation()
 
-    const seeking = target
     const blob = await new Promise<Blob>((r) => canvas.toBlob((b) => r(b!), 'image/jpeg', 0.9))
     const file = new File([blob], 'shot.jpg', { type: 'image/jpeg' })
 
     try {
       const result = await recognizeText(file, OCR_TIMEOUT_MS)
-      const box: WordBox | undefined = result.words.find((w) => w.text.includes(seeking))
-      const hit = !!box || result.text.includes(seeking)
-      const circle = box
-        ? { cx: box.cx, cy: box.cy, d: Math.min(0.5, Math.max(box.w, box.h) * 1.6 + 0.04) }
-        : null
 
-      if (hit) {
-        const idx = collected.findIndex((c) => !c)
-        const nextCollected = collected.map((c, i) => (i === idx ? true : c))
-        setCollected(nextCollected)
-
-        const g = geo
-        const at = g && 'lat' in g ? { lat: g.lat, lng: g.lng, acc: g.acc } : null
-        logMission({ word, syllable: seeking, ts: new Date().toISOString(), location: at, engine: result.engine })
-
-        // 단어 완성 → 크레딧 적립
-        if (nextCollected.every(Boolean)) {
-          const nc = credits + CREDITS_PER_WORD
-          const ncomp = completed + 1
-          setCredits(nc)
-          setNum('credits', nc)
-          setCompleted(ncomp)
-          setNum('completed', ncomp)
+      // 남은 글자 중 사진에 보이는 첫 글자 하나를 수집 (순서 무관, 한 번에 하나)
+      let foundIdx = -1
+      let foundBox: WordBox | null = null
+      for (let i = 0; i < syllables.length; i++) {
+        if (collected[i]) continue
+        const s = syllables[i]
+        const box = result.words.find((w) => w.text.includes(s))
+        if (box || result.text.includes(s)) {
+          foundIdx = i
+          foundBox = box ?? null
+          break
         }
       }
+      const hit = foundIdx >= 0
+      const circle = foundBox
+        ? { cx: foundBox.cx, cy: foundBox.cy, d: Math.min(0.5, Math.max(foundBox.w, foundBox.h) * 1.6 + 0.04) }
+        : null
+      if (hit) applyFind(foundIdx)
 
       setLast({
         text: result.text,
         durationMs: result.durationMs,
         hit,
-        target: seeking,
+        found: hit ? syllables[foundIdx] : '',
+        remain: remainList.join(' '),
         engine: result.engine,
         note: result.note,
         circle,
@@ -187,6 +202,17 @@ export default function App() {
       setErrorDetail(formatError(err))
       setLast(null)
     }
+  }
+
+  /** 베타: 버튼 한 번 = 남은 글자 하나 통과 */
+  function betaPass() {
+    const idx = collected.findIndex((c) => !c)
+    if (idx < 0) return
+    applyFind(idx)
+    setPreview('')
+    setCam(streamRef.current ? 'live' : 'off')
+    setPhase('idle')
+    setLast(null)
   }
 
   function retake() {
@@ -205,8 +231,7 @@ export default function App() {
     setPhase('idle')
     setErrorMsg('')
     setErrorDetail('')
-    setShowHint(true)
-    setHintFailed(false)
+    setWinImgFailed(false)
     setCam(streamRef.current ? 'live' : 'off')
   }
 
@@ -220,12 +245,7 @@ export default function App() {
     setOcrKeySet(!!input.trim())
   }
 
-  const geoText =
-    geo == null
-      ? '위치 확인 중…'
-      : 'error' in geo
-        ? `위치 미확보 (${geo.error})`
-        : `위치 기록됨 · 정확도 ±${geo.acc}m`
+  const geoOk = geo != null && 'lat' in geo
 
   return (
     <div className="app">
@@ -246,159 +266,165 @@ export default function App() {
         <div className="progressbar-fill" style={{ width: `${(doneCount / syllables.length) * 100}%` }} />
       </div>
 
-      {/* 미션 카드 */}
-      <section className="card mission">
-        <div className="mission-top">
-          <span className="eyebrow">이번 미션</span>
-          <span className="count-pill">
-            {doneCount}/{syllables.length}
-          </span>
-        </div>
-
-        <div className="word-line">
-          {syllables.map((s, i) => (
-            <span key={i} className={`syl ${collected[i] ? 'got' : i === currentIndex ? 'now' : 'todo'}`}>
-              {s}
-            </span>
-          ))}
-        </div>
-
-        {showHint && !allDone && !hintFailed && (
-          <figure className="hint">
-            <img
-              src={hintImageUrl(entry)}
-              alt={`${word} (${entry.en}) 예시`}
-              loading="eager"
-              onError={() => setHintFailed(true)}
-            />
-            <figcaption>‘{word}’ 는 이런 느낌 · 참고용</figcaption>
-            <button className="hint-close" onClick={() => setShowHint(false)} aria-label="힌트 닫기">
-              ✕
-            </button>
-          </figure>
-        )}
-
-        {!allDone && (
-          <div className="seek">
-            <span className="seek-label">지금 찾을 글자</span>
-            <span className="seek-target">{target}</span>
-            <span className="seek-help">길거리 간판에서 ‘{target}’ 한 글자를 찾아 찍어요</span>
-          </div>
-        )}
-      </section>
-
-      {/* 카메라 / 결과 카드 */}
       {!allDone && (
-        <section className="card cam-card">
-          <div className="cam-view">
-            {/* 항상 마운트(스트림 연결 유지), 표시만 토글 */}
-            <video
-              ref={videoRef}
-              className="cam-video"
-              playsInline
-              muted
-              autoPlay
-              style={{ display: cam === 'live' ? 'block' : 'none' }}
-            />
+        <>
+          {/* 미션 카드 — 사진 없이 단어만 (사진은 완성 후 보상) */}
+          <section className="card mission">
+            <div className="mission-top">
+              <span className="eyebrow">이번 미션</span>
+              <span className="count-pill">
+                {doneCount}/{syllables.length}
+              </span>
+            </div>
+            <div className="word-line">
+              {syllables.map((s, i) => (
+                <span key={i} className={`syl ${collected[i] ? 'got' : 'now'}`}>
+                  {s}
+                </span>
+              ))}
+            </div>
+            <p className="seek-help">
+              간판에서 <b>{remainList.join(', ')}</b> 글자를 찾아 찍어요 · <i>순서 상관없어요</i>
+            </p>
+          </section>
 
-            {cam === 'off' && (
-              <div className="cam-placeholder">
-                <span className="cam-icon">📷</span>
-                <p>실시간 카메라로 ‘{target}’ 를 찾으세요</p>
+          {/* 카메라 카드 */}
+          <section className="card cam-card">
+            {cam === 'off' ? (
+              <div className="cam-compact">
                 <button className="btn-primary" onClick={startCamera}>
-                  카메라 켜기
+                  📷 카메라 켜기
                 </button>
+                <span className="cam-compact-hint">실시간 촬영만 가능</span>
                 {camError && <p className="cam-err">{camError}</p>}
               </div>
-            )}
-
-            {cam === 'frozen' && preview && (
-              <div className="frozen">
-                <img src={preview} alt="촬영 사진" />
-                {phase === 'loading' && (
-                  <div className="shot-loading">
-                    <span className="spinner" />
-                    <span>‘{last?.target ?? target}’ 찾는 중…</span>
-                  </div>
-                )}
-                {phase === 'idle' && last?.hit && last.circle && (
-                  <span
-                    className="find-circle"
-                    style={{
-                      left: `${last.circle.cx * 100}%`,
-                      top: `${last.circle.cy * 100}%`,
-                      width: `${last.circle.d * 100}%`,
-                    }}
+            ) : (
+              <>
+                <div className="cam-view">
+                  <video
+                    ref={videoRef}
+                    className="cam-video"
+                    playsInline
+                    muted
+                    autoPlay
+                    style={{ display: cam === 'live' ? 'block' : 'none' }}
                   />
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* 카메라 컨트롤 */}
-          {cam === 'live' && (
-            <div className="cam-controls">
-              <button className="shutter" onClick={capture} aria-label="촬영">
-                <span />
-              </button>
-              <p className="geo">📍 {geoText}</p>
-            </div>
-          )}
-
-          {cam === 'frozen' && phase !== 'loading' && (
-            <div className="result-area">
-              {phase === 'error' && (
-                <div className="result err">
-                  <p>⚠️ {errorMsg}</p>
-                  {errorDetail && (
-                    <details className="dev">
-                      <summary>개발용 에러 보기</summary>
-                      <pre>{errorDetail}</pre>
-                    </details>
+                  {cam === 'frozen' && preview && (
+                    <div className="frozen">
+                      <img src={preview} alt="촬영 사진" />
+                      {phase === 'loading' && (
+                        <div className="shot-loading">
+                          <span className="spinner" />
+                          <span>글자 찾는 중…</span>
+                        </div>
+                      )}
+                      {phase === 'idle' && last?.hit && last.circle && (
+                        <span
+                          className="find-circle"
+                          style={{
+                            left: `${last.circle.cx * 100}%`,
+                            top: `${last.circle.cy * 100}%`,
+                            width: `${last.circle.d * 100}%`,
+                          }}
+                        />
+                      )}
+                    </div>
                   )}
                 </div>
-              )}
-              {phase === 'idle' && last && (
-                <div className={`result ${last.hit ? 'ok' : 'miss'}`}>
-                  <p>
-                    {last.hit
-                      ? `‘${last.target}’ 찾았다! 🎉`
-                      : `이 사진엔 ‘${last.target}’ 가 안 보여요. 다른 간판에 도전!`}
-                  </p>
-                  <details className="dev">
-                    <summary>
-                      인식 텍스트 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
-                    </summary>
-                    {last.note && <pre>⚠ {last.note}</pre>}
-                    <pre>{last.text || '(빈 결과)'}</pre>
-                  </details>
-                </div>
-              )}
-              <button className="btn-primary" onClick={retake}>
-                다시 촬영
-              </button>
+
+                {cam === 'live' && (
+                  <div className="cam-controls">
+                    <button className="shutter" onClick={capture} aria-label="촬영">
+                      <span />
+                    </button>
+                  </div>
+                )}
+
+                {cam === 'frozen' && phase !== 'loading' && (
+                  <div className="result-area">
+                    {phase === 'error' && (
+                      <div className="result err">
+                        <p>⚠️ {errorMsg}</p>
+                        {errorDetail && (
+                          <details className="dev">
+                            <summary>개발용 에러 보기</summary>
+                            <pre>{errorDetail}</pre>
+                          </details>
+                        )}
+                      </div>
+                    )}
+                    {phase === 'idle' && last && (
+                      <div className={`result ${last.hit ? 'ok' : 'miss'}`}>
+                        <p>{last.hit ? `‘${last.found}’ 찾았다! 🎉` : `남은 글자(${last.remain})가 안 보여요. 다시!`}</p>
+                        <details className="dev">
+                          <summary>
+                            인식 텍스트 (개발용 · {ENGINE_LABEL[last.engine] ?? last.engine} · {last.durationMs}ms)
+                          </summary>
+                          {last.note && <pre>⚠ {last.note}</pre>}
+                          <pre>{last.text || '(빈 결과)'}</pre>
+                        </details>
+                      </div>
+                    )}
+                    <button className="btn-primary" onClick={retake}>
+                      다시 촬영
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* 베타: 버튼 한 번 = 한 글자 통과 */}
+            <button className="beta-btn" onClick={betaPass}>
+              🐞 (베타) ‘{remainList[0]}’ 맞춘 걸로
+            </button>
+          </section>
+
+          {/* 내 위치 지도 */}
+          <section className="card map-card">
+            <div className="map-head">
+              <span>📍 내 위치</span>
+              <span className="map-acc">{geoOk ? `정확도 ±${(geo as any).acc}m` : '위치 확인 중…'}</span>
             </div>
-          )}
-        </section>
+            {geoOk ? (
+              <iframe
+                className="map-frame"
+                title="내 위치"
+                src={mapEmbed((geo as any).lat, (geo as any).lng)}
+                loading="lazy"
+              />
+            ) : (
+              <div className="map-empty">
+                <p>{geo && 'error' in geo ? `위치 미확보: ${geo.error}` : '위치 권한을 허용해 주세요'}</p>
+                <button className="btn-mini" onClick={requestLocation}>
+                  위치 다시 시도
+                </button>
+              </div>
+            )}
+          </section>
+        </>
       )}
 
-      {/* 승리 + 사전 정의 */}
+      {/* 승리 — 사진 + 사전 정의 + 크레딧 */}
       {allDone && (
         <section className="card win">
           <div className="win-emoji">🏆</div>
           <p className="win-word">{word}</p>
-          <p className="win-sub">+{CREDITS_PER_WORD} 크레딧 적립!</p>
+          {!winImgFailed && (
+            <figure className="win-photo">
+              <img src={hintImageUrl(entry)} alt={word} onError={() => setWinImgFailed(true)} />
+            </figure>
+          )}
           <div className="def-box">
             <span className="def-label">📖 {word}</span>
             <p className="def-text">{entry.def}</p>
           </div>
+          <p className="win-credit">+{CREDITS_PER_WORD} 크레딧 적립!</p>
           <button className="btn-primary" onClick={newGame}>
             다음 단어 도전 →
           </button>
         </section>
       )}
 
-      {/* 부정방지 안내 + OCR 키 */}
       <div className="footnote">
         <p className="anti">🔒 실시간 촬영만 가능 · 보관함/갤러리 불가 · 위치 기록</p>
         <button className="link-btn" onClick={editOcrKey}>

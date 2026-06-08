@@ -425,6 +425,39 @@ body {
 /* 카메라 카드 */
 .cam-card {
   padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* 카메라 OFF: 컴팩트 (창 크게 안 잡음) */
+.cam-compact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+}
+.cam-compact .btn-primary {
+  width: 100%;
+}
+.cam-compact-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.beta-btn {
+  align-self: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  color: #9aa3b8;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.beta-btn:active {
+  transform: scale(0.97);
 }
 .cam-view {
   position: relative;
@@ -541,6 +574,66 @@ body {
 }
 .result-area .btn-primary {
   width: 100%;
+}
+
+/* 지도 카드 */
+.map-card {
+  padding: 14px;
+}
+.map-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.map-acc {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+.map-frame {
+  width: 100%;
+  height: 170px;
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  display: block;
+}
+.map-empty {
+  text-align: center;
+  padding: 18px;
+  color: var(--muted);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.map-empty p {
+  margin: 0;
+}
+
+/* 승리 사진 */
+.win-photo {
+  margin: 6px 0 14px;
+  width: 100%;
+  border-radius: 16px;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.win-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.win-credit {
+  margin: 0 0 16px;
+  font-weight: 800;
+  color: #fff;
+  font-size: 15px;
 }
 
 /* 사전 정의 */
