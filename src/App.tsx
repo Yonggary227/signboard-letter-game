@@ -45,13 +45,6 @@ const getKakaoKey = () => {
     return ''
   }
 }
-const setKakaoKey = (k: string) => {
-  try {
-    k.trim() ? localStorage.setItem('kakao_js_key', k.trim()) : localStorage.removeItem('kakao_js_key')
-  } catch {
-    /* noop */
-  }
-}
 function staticMapImg(lat: number, lng: number): string {
   return `https://static-maps.yandex.ru/1.x/?ll=${lng},${lat}&z=16&size=600,300&l=map&lang=en_US&pt=${lng},${lat},pm2rdm`
 }
@@ -113,7 +106,7 @@ export default function App() {
   const [credits, setCredits] = useState<number>(() => num('credits', 0))
   const [completed, setCompleted] = useState<number>(() => num('completed', 0))
   const [ocrKeySet, setOcrKeySet] = useState<boolean>(() => !!getOcrSpaceKey())
-  const [kakaoKey, setKakaoKeyState] = useState<string>(() => getKakaoKey())
+  const kakaoKey = getKakaoKey() // 승인 후 키 주입 예정 (현재는 정적 지도)
   const [winImgFailed, setWinImgFailed] = useState(false)
   const [wiki, setWiki] = useState<WordInfo | null>(null)
   const [wikiLoading, setWikiLoading] = useState(false)
@@ -242,15 +235,6 @@ export default function App() {
     setOcrKeySet(!!input.trim())
   }
 
-  function editKakaoKey() {
-    const input = window.prompt(
-      '카카오맵 JavaScript 키를 붙여넣으세요.\n\n1) developers.kakao.com → 내 애플리케이션 → 앱 키 → JavaScript 키\n2) 플랫폼 → Web → 사이트 도메인에 https://yonggary227.github.io 등록\n\n• 이 기기에만 저장됩니다. 비우면 기본 지도로.',
-      getKakaoKey(),
-    )
-    if (input === null) return
-    setKakaoKey(input)
-    setKakaoKeyState(input.trim())
-  }
 
   const geoOk = geo != null && 'lat' in geo
 
@@ -360,13 +344,7 @@ export default function App() {
             <section className="card map-card">
               <div className="map-head">
                 <span>📍 내 위치</span>
-                {geoOk ? (
-                  <button className="map-link" onClick={editKakaoKey}>
-                    {kakaoKey ? '카카오맵 ✓' : '카카오맵 연결'}
-                  </button>
-                ) : (
-                  <span className="map-acc">위치 확인 중…</span>
-                )}
+                <span className="map-acc">{geoOk ? `정확도 ±${(geo as any).acc}m` : '위치 확인 중…'}</span>
               </div>
               {geoOk ? (
                 kakaoKey ? (
